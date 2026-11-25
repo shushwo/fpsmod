@@ -93,9 +93,19 @@ extern "C" void OnModLoad()
             break;
         }
     }
-    bool ok2 = aml->HookPLT((void*)(lib + 0x196bf8), (void*)&HookOf_HID_IsPressed, (void**)&HID_IsPressed);
+    bool ok2 = false;
+    {
+        uintptr_t* got = (uintptr_t*)(lib + 0x672774);
+        if (*got == lib + 0x28c181)
+        {
+            HID_IsPressed = (bool (*)(int, float*))(*got);
+            aml->Unprot((uintptr_t)got, 4);
+            *got = (uintptr_t)&HookOf_HID_IsPressed;
+            ok2 = true;
+        }
+    }
     Note(ok2 ? "HID gancho OK" : "HID gancho FALHOU");
-    Note(ok ? "v8 carregado: gancho OK" : "v8 carregado: gancho FALHOU");
-    aml->ShowToast(true, ok ? "FPS Teste v8 carregado: gancho OK" : "FPS Teste v8 carregado: gancho FALHOU");
+    Note(ok ? "v8b carregado: gancho OK" : "v8b carregado: gancho FALHOU");
+    aml->ShowToast(true, ok ? "FPS Teste v8b carregado: gancho OK" : "FPS Teste v8b carregado: gancho FALHOU");
     logger->Info("Gancho instalado");
 }
