@@ -18,7 +18,9 @@ static void Note(const char* msg)
 }
 
 // bool CTaskSimplePlayerOnFoot::ProcessPed(CPed*)
-DECL_HOOKb(PlayerOnFoot_ProcessPed, void* self, void* ped)
+typedef bool (*ProcessPed_t)(void*, void*);
+static ProcessPed_t PlayerOnFoot_ProcessPed = NULL;
+static bool HookOf_PlayerOnFoot_ProcessPed(void* self, void* ped)
 {
     static int calls = 0;
     if (++calls == 300) Note("gancho esta sendo chamado");
@@ -44,8 +46,22 @@ extern "C" void OnModLoad()
     if (!lib) { logger->Error("sem libGTASA"); return; }
     void* h = aml->GetLibHandle("libGTASA.so");
     GetTaskUseGun = (GetTaskUseGun_t)aml->GetSym(h, "_ZNK16CPedIntelligence13GetTaskUseGunEv");
-    bool ok = HOOKSYM(PlayerOnFoot_ProcessPed, h, "_ZN23CTaskSimplePlayerOnFoot10ProcessPedEP4CPed");
-    Note(ok ? "v3 carregado: gancho OK" : "v3 carregado: gancho FALHOU");
-    aml->ShowToast(true, ok ? "FPS Teste v2 carregado: gancho OK" : "FPS Teste v2 carregado: gancho FALHOU");
+    bool ok = false;
+    uintptr_t target = lib + 0x539f2d;
+    uintptr_t vt = lib + 0x66cf30;
+    for (int i = 0; i < 13; i++)
+    {
+        uintptr_t* slot = (uintptr_t*)(vt + i * 4);
+        if (*slot == target)
+        {
+            PlayerOnFoot_ProcessPed = (ProcessPed_t)(*slot);
+            aml->Unprot((uintptr_t)slot, 4);
+            *slot = (uintptr_t)&HookOf_PlayerOnFoot_ProcessPed;
+            ok = true;
+            break;
+        }
+    }
+    Note(ok ? "v5 carregado: gancho OK" : "v5 carregado: gancho FALHOU");
+    aml->ShowToast(true, ok ? "FPS Teste v5 carregado: gancho OK" : "FPS Teste v5 carregado: gancho FALHOU");
     logger->Info("Gancho instalado");
 }
