@@ -31,7 +31,6 @@ DECL_HOOKb(PlayerOnFoot_ProcessPed, void* self, void* ped)
         {
             lastState = state;
             lastToast = now;
-            aml->ShowToast(false, state ? "FPS Teste: MIRANDO" : "FPS Teste: ANDANDO");
             Note(state ? "MIRANDO (tarefa de arma ativa)" : "ANDANDO (sem tarefa de arma)");
         }
     }
