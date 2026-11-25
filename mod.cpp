@@ -30,6 +30,23 @@ static void Note(const char* msg)
     if (f) { fprintf(f, "%ld %s\n", (long)time(NULL), msg); fclose(f); }
 }
 
+// static bool CHID::IsPressed(HIDMapping, float*)
+static unsigned char hidLast[256];
+static int hidLogs = 0;
+DECL_HOOKb(HID_IsPressed, int m, float* v)
+{
+    bool r = HID_IsPressed(m, v);
+    if (m >= 0 && m < 256 && hidLogs < 300 && (unsigned char)r != hidLast[m])
+    {
+        hidLast[m] = (unsigned char)r;
+        hidLogs++;
+        char b[96];
+        snprintf(b, sizeof(b), "HID id=%d %s valor=%.2f", m, r ? "APERTADO" : "solto", v ? *v : -9.0f);
+        Note(b);
+    }
+    return r;
+}
+
 // bool CTaskSimplePlayerOnFoot::ProcessPed(CPed*)
 typedef bool (*ProcessPed_t)(void*, void*);
 static ProcessPed_t PlayerOnFoot_ProcessPed = NULL;
@@ -76,18 +93,9 @@ extern "C" void OnModLoad()
             break;
         }
     }
-    {
-        struct { const char* n; uintptr_t off; } vts[] = {
-            {"Targeting", 0x6635f8}, {"Look", 0x6647f0}, {"Move", 0x664884}, {"Attack", 0x6630c4} };
-        for (auto& v : vts)
-        {
-            char buf[600]; int n = snprintf(buf, sizeof(buf), "VT %s:", v.n);
-            uint32_t* p = (uint32_t*)(lib + v.off);
-            for (int i = 0; i < 37; i++) n += snprintf(buf + n, sizeof(buf) - n, " %x", (unsigned)(p[i] ? p[i] - lib : 0));
-            Note(buf);
-        }
-    }
-    Note(ok ? "v7 carregado: gancho OK" : "v7 carregado: gancho FALHOU");
-    aml->ShowToast(true, ok ? "FPS Teste v7 carregado: gancho OK" : "FPS Teste v7 carregado: gancho FALHOU");
+    bool ok2 = aml->HookPLT((void*)(lib + 0x196bf8), (void*)&HookOf_HID_IsPressed, (void**)&HID_IsPressed);
+    Note(ok2 ? "HID gancho OK" : "HID gancho FALHOU");
+    Note(ok ? "v8 carregado: gancho OK" : "v8 carregado: gancho FALHOU");
+    aml->ShowToast(true, ok ? "FPS Teste v8 carregado: gancho OK" : "FPS Teste v8 carregado: gancho FALHOU");
     logger->Info("Gancho instalado");
 }
