@@ -6,14 +6,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Baixar cabecalhos do AML
-        run: git clone --depth 1 https://github.com/RusJJ/AndroidModLoader aml
+        run: git clone --depth 1 --recursive https://github.com/RusJJ/AndroidModLoader aml
       - name: Compilar
         run: |
-          H=$(dirname $(dirname $(find aml -name amlmod.h | head -1)))
-          echo "Cabecalhos em: $H"
           CXX=$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi21-clang++
-          $CXX -shared -fPIC -O2 -std=c++17 -I"$H" -Iaml/include mod.cpp -o libFPSTest.so -llog
+          $CXX -shared -fPIC -O2 -std=c++17 -Iaml -Iaml/include mod.cpp -o libFPSTest.so -llog
       - uses: actions/upload-artifact@v4
         with:
           name: libFPSTest
           path: libFPSTest.so
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aml-headers
+          path: |
+            aml/mod
+            aml/include
+            aml/template_of_mod
+            aml/docs
+            aml/ARMPatch
