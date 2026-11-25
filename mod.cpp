@@ -30,19 +30,32 @@ static void Note(const char* msg)
     if (f) { fprintf(f, "%ld %s\n", (long)time(NULL), msg); fclose(f); }
 }
 
-// static bool CHID::IsPressed(HIDMapping, float*)
-static unsigned char hidLast[256];
+// CHID::IsPressed(HIDMapping, float*) - argumentos lidos como inteiros crus (sem desreferenciar)
+struct HidEnt { uint32_t a, b; unsigned char last; bool used; };
+static HidEnt hidTab[64];
 static int hidLogs = 0;
-DECL_HOOKb(HID_IsPressed, int m, float* v)
+static int hidCalls = 0;
+DECL_HOOKb(HID_IsPressed, uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d)
 {
-    bool r = HID_IsPressed(m, v);
-    if (m >= 0 && m < 256 && hidLogs < 300 && (unsigned char)r != hidLast[m])
+    bool r = HID_IsPressed(a, b, c, d);
+    if (++hidCalls == 1000) Note("HID: 1000 chamadas");
+    if (hidLogs < 300)
     {
-        hidLast[m] = (unsigned char)r;
-        hidLogs++;
-        char b[96];
-        snprintf(b, sizeof(b), "HID id=%d %s valor=%.2f", m, r ? "APERTADO" : "solto", v ? *v : -9.0f);
-        Note(b);
+        int idx = -1;
+        for (int i = 0; i < 64; i++)
+            if (hidTab[i].used && hidTab[i].a == (uint32_t)a && hidTab[i].b == (uint32_t)b) { idx = i; break; }
+        bool isNew = false;
+        if (idx < 0)
+            for (int i = 0; i < 64; i++)
+                if (!hidTab[i].used) { hidTab[i].used = true; hidTab[i].a = (uint32_t)a; hidTab[i].b = (uint32_t)b; hidTab[i].last = 2; idx = i; isNew = true; break; }
+        if (idx >= 0 && hidTab[idx].last != (unsigned char)r)
+        {
+            hidTab[idx].last = (unsigned char)r;
+            hidLogs++;
+            char buf[120];
+            snprintf(buf, sizeof(buf), "HID %s a=%u b=%u c=%u -> %s", isNew ? "novo" : "mudou", (unsigned)a, (unsigned)b, (unsigned)c, r ? "APERTADO" : "solto");
+            Note(buf);
+        }
     }
     return r;
 }
@@ -98,14 +111,14 @@ extern "C" void OnModLoad()
         uintptr_t* got = (uintptr_t*)(lib + 0x672774);
         if (*got == lib + 0x28c181)
         {
-            HID_IsPressed = (bool (*)(int, float*))(*got);
+            HID_IsPressed = (bool (*)(uintptr_t, uintptr_t, uintptr_t, uintptr_t))(*got);
             aml->Unprot((uintptr_t)got, 4);
             *got = (uintptr_t)&HookOf_HID_IsPressed;
             ok2 = true;
         }
     }
     Note(ok2 ? "HID gancho OK" : "HID gancho FALHOU");
-    Note(ok ? "v8b carregado: gancho OK" : "v8b carregado: gancho FALHOU");
-    aml->ShowToast(true, ok ? "FPS Teste v8b carregado: gancho OK" : "FPS Teste v8b carregado: gancho FALHOU");
+    Note(ok ? "v8c carregado: gancho OK" : "v8c carregado: gancho FALHOU");
+    aml->ShowToast(true, ok ? "FPS Teste v8c carregado: gancho OK" : "FPS Teste v8c carregado: gancho FALHOU");
     logger->Info("Gancho instalado");
 }
