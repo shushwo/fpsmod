@@ -2,26 +2,16 @@
 #include <mod/logger.h>
 #include <mod/config.h>
 #include <time.h>
+#include <math.h>
 
-MYMODCFG(net.fpsmod.teste, FPS Teste, 2.0, VoceMesmo)
+MYMODCFG(net.fpsmod.teste, FPS Teste, 9.0, VoceMesmo)
 
-typedef void* (*GetTaskUseGun_t)(void* intelligence);
-static GetTaskUseGun_t GetTaskUseGun = NULL;
 static uintptr_t gLib = 0;
-static void Note(const char* msg);
-static void DumpPad(const char* tag, void* ped)
-{
-    char buf[900]; int n = 0;
-    unsigned char* p = (unsigned char*)(gLib + 0x959b1c);
-    n += snprintf(buf + n, sizeof(buf) - n, "%s PAD:", tag);
-    for (int i = 0; i < 0x60; i++) n += snprintf(buf + n, sizeof(buf) - n, "%02x", p[i]);
-    signed char slot = *(signed char*)((char*)ped + 0x71c);
-    int wtype = *(int*)((char*)ped + 0x5a4 + slot * 0x1c);
-    n += snprintf(buf + n, sizeof(buf) - n, " slot=%d arma=%d", (int)slot, wtype);
-    Note(buf);
-}
-static int lastState = -1;
-static time_t lastToast = 0;
+typedef void* (*GetTaskUseGun_t)(void* intelligence);
+typedef void* (*FindPlayerPed_t)(int);
+static GetTaskUseGun_t GetTaskUseGun = NULL;
+static FindPlayerPed_t FindPlayerPed = NULL;
+
 static void Note(const char* msg)
 {
     char path[512];
@@ -30,95 +20,106 @@ static void Note(const char* msg)
     if (f) { fprintf(f, "%ld %s\n", (long)time(NULL), msg); fclose(f); }
 }
 
-// CHID::IsPressed(HIDMapping, float*) - argumentos lidos como inteiros crus (sem desreferenciar)
-struct HidEnt { uint32_t a, b; unsigned char last; bool used; };
-static HidEnt hidTab[64];
-static int hidLogs = 0;
-static int hidCalls = 0;
-DECL_HOOKb(HID_IsPressed, uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d)
+struct Vec2 { float x, y; };
+static float gStickX = 0, gStickY = 0;
+static bool gForce = false;
+static int gLogs = 0;
+
+static bool HoldingFirearm()
 {
-    bool r = HID_IsPressed(a, b, c, d);
-    if (++hidCalls == 1000) Note("HID: 1000 chamadas");
-    if (hidLogs < 300)
-    {
-        int idx = -1;
-        for (int i = 0; i < 64; i++)
-            if (hidTab[i].used && hidTab[i].a == (uint32_t)a && hidTab[i].b == (uint32_t)b) { idx = i; break; }
-        bool isNew = false;
-        if (idx < 0)
-            for (int i = 0; i < 64; i++)
-                if (!hidTab[i].used) { hidTab[i].used = true; hidTab[i].a = (uint32_t)a; hidTab[i].b = (uint32_t)b; hidTab[i].last = 2; idx = i; isNew = true; break; }
-        if (idx >= 0 && hidTab[idx].last != (unsigned char)r)
-        {
-            hidTab[idx].last = (unsigned char)r;
-            hidLogs++;
-            char buf[120];
-            snprintf(buf, sizeof(buf), "HID %s a=%u b=%u c=%u -> %s", isNew ? "novo" : "mudou", (unsigned)a, (unsigned)b, (unsigned)c, r ? "APERTADO" : "solto");
-            Note(buf);
-        }
-    }
-    return r;
+    if (!FindPlayerPed) return false;
+    char* ped = (char*)FindPlayerPed(-1);
+    if (!ped) return false;
+    signed char slot = *(signed char*)(ped + 0x71c);
+    if (slot < 0 || slot > 12) return false;
+    int type = *(int*)(ped + 0x5a4 + slot * 0x1c);
+    return type >= 22 && type <= 34;
 }
 
-// bool CTaskSimplePlayerOnFoot::ProcessPed(CPed*)
-typedef bool (*ProcessPed_t)(void*, void*);
-static ProcessPed_t PlayerOnFoot_ProcessPed = NULL;
-static bool HookOf_PlayerOnFoot_ProcessPed(void* self, void* ped)
+// bool CTouchInterface::IsTouched(WidgetIDs, CVector2D*, int)   (via GOT)
+typedef bool (*IsTouched_t)(int, Vec2*, int);
+static IsTouched_t IsTouched_orig = NULL;
+static bool HookOf_IsTouched(int id, Vec2* v, int n)
 {
-    static int calls = 0;
-    if (++calls == 300) Note("gancho esta sendo chamado");
+    if (id == 0xa7)
+    {
+        bool r = IsTouched_orig(id, v, n);
+        if (r && v) { gStickX = v->x; gStickY = v->y; }
+        else { gStickX = 0; gStickY = 0; }
+        // decide se forca a mira: andando de lado com arma de fogo
+        bool want = (fabsf(gStickX) > 0.6f) && HoldingFirearm();
+        if (want != gForce)
+        {
+            gForce = want;
+            if (gLogs < 150)
+            {
+                gLogs++;
+                char b[100];
+                snprintf(b, sizeof(b), "FORCA %s x=%.2f y=%.2f", want ? "LIGADA" : "desligada", gStickX, gStickY);
+                Note(b);
+            }
+        }
+        return r;
+    }
+    if (id == 0x13 && gForce) return true;
+    return IsTouched_orig(id, v, n);
+}
+
+// bool CTaskSimplePlayerOnFoot::ProcessPed(CPed*)  (via vtable) - so registra o estado
+typedef bool (*ProcessPed_t)(void*, void*);
+static ProcessPed_t ProcessPed_orig = NULL;
+static int lastState = -1;
+static bool HookOf_ProcessPed(void* self, void* ped)
+{
     if (GetTaskUseGun && ped)
     {
         void* intel = *(void**)((char*)ped + 0x440);
         int state = (intel && GetTaskUseGun(intel)) ? 1 : 0;
-        time_t now = time(NULL);
-        if (state != lastState && now - lastToast >= 2)
+        if (state != lastState && gLogs < 150)
         {
             lastState = state;
-            lastToast = now;
+            gLogs++;
             Note(state ? "MIRANDO (tarefa de arma ativa)" : "ANDANDO (sem tarefa de arma)");
-            DumpPad(state ? "mirando" : "andando", ped);
         }
     }
-    return PlayerOnFoot_ProcessPed(self, ped);
+    return ProcessPed_orig(self, ped);
+}
+
+static bool PatchGot(uintptr_t gotOff, uintptr_t expectedFn, void* hook, void** orig)
+{
+    uintptr_t* got = (uintptr_t*)(gLib + gotOff);
+    if (*got != gLib + expectedFn) return false;
+    *orig = (void*)*got;
+    aml->Unprot((uintptr_t)got, 4);
+    *got = (uintptr_t)hook;
+    return true;
 }
 
 extern "C" void OnModLoad()
 {
     logger->SetTag("FPS Teste");
     uintptr_t lib = aml->GetLib("libGTASA.so");
+    if (!lib) return;
     gLib = lib;
-    if (!lib) { logger->Error("sem libGTASA"); return; }
     void* h = aml->GetLibHandle("libGTASA.so");
     GetTaskUseGun = (GetTaskUseGun_t)aml->GetSym(h, "_ZNK16CPedIntelligence13GetTaskUseGunEv");
+    FindPlayerPed = (FindPlayerPed_t)aml->GetSym(h, "_Z13FindPlayerPedi");
+
     bool ok = false;
-    uintptr_t target = lib + 0x539f2d;
     uintptr_t vt = lib + 0x66cf30;
     for (int i = 0; i < 13; i++)
     {
         uintptr_t* slot = (uintptr_t*)(vt + i * 4);
-        if (*slot == target)
+        if (*slot == lib + 0x539f2d)
         {
-            PlayerOnFoot_ProcessPed = (ProcessPed_t)(*slot);
+            ProcessPed_orig = (ProcessPed_t)(*slot);
             aml->Unprot((uintptr_t)slot, 4);
-            *slot = (uintptr_t)&HookOf_PlayerOnFoot_ProcessPed;
+            *slot = (uintptr_t)&HookOf_ProcessPed;
             ok = true;
             break;
         }
     }
-    bool ok2 = false;
-    {
-        uintptr_t* got = (uintptr_t*)(lib + 0x672774);
-        if (*got == lib + 0x28c181)
-        {
-            HID_IsPressed = (bool (*)(uintptr_t, uintptr_t, uintptr_t, uintptr_t))(*got);
-            aml->Unprot((uintptr_t)got, 4);
-            *got = (uintptr_t)&HookOf_HID_IsPressed;
-            ok2 = true;
-        }
-    }
-    Note(ok2 ? "HID gancho OK" : "HID gancho FALHOU");
-    Note(ok ? "v8c carregado: gancho OK" : "v8c carregado: gancho FALHOU");
-    aml->ShowToast(true, ok ? "FPS Teste v8c carregado: gancho OK" : "FPS Teste v8c carregado: gancho FALHOU");
-    logger->Info("Gancho instalado");
+    bool ok2 = PatchGot(0x674388, 0x2b0cbd, (void*)&HookOf_IsTouched, (void**)&IsTouched_orig);
+    Note(ok2 && FindPlayerPed ? "v9 carregado: ganchos OK" : "v9 carregado: ALGUM GANCHO FALHOU");
+    aml->ShowToast(true, ok && ok2 ? "FPS Teste v9: ganchos OK" : "FPS Teste v9: gancho FALHOU");
 }
