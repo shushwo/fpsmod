@@ -76,7 +76,18 @@ extern "C" void OnModLoad()
             break;
         }
     }
-    Note(ok ? "v6 carregado: gancho OK" : "v6 carregado: gancho FALHOU");
-    aml->ShowToast(true, ok ? "FPS Teste v6 carregado: gancho OK" : "FPS Teste v6 carregado: gancho FALHOU");
+    {
+        struct { const char* n; uintptr_t off; } vts[] = {
+            {"Targeting", 0x6635f8}, {"Look", 0x6647f0}, {"Move", 0x664884}, {"Attack", 0x6630c4} };
+        for (auto& v : vts)
+        {
+            char buf[600]; int n = snprintf(buf, sizeof(buf), "VT %s:", v.n);
+            uint32_t* p = (uint32_t*)(lib + v.off);
+            for (int i = 0; i < 37; i++) n += snprintf(buf + n, sizeof(buf) - n, " %x", (unsigned)(p[i] ? p[i] - lib : 0));
+            Note(buf);
+        }
+    }
+    Note(ok ? "v7 carregado: gancho OK" : "v7 carregado: gancho FALHOU");
+    aml->ShowToast(true, ok ? "FPS Teste v7 carregado: gancho OK" : "FPS Teste v7 carregado: gancho FALHOU");
     logger->Info("Gancho instalado");
 }
