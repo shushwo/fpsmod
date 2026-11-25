@@ -7,6 +7,19 @@ MYMODCFG(net.fpsmod.teste, FPS Teste, 2.0, VoceMesmo)
 
 typedef void* (*GetTaskUseGun_t)(void* intelligence);
 static GetTaskUseGun_t GetTaskUseGun = NULL;
+static uintptr_t gLib = 0;
+static void Note(const char* msg);
+static void DumpPad(const char* tag, void* ped)
+{
+    char buf[900]; int n = 0;
+    unsigned char* p = (unsigned char*)(gLib + 0x959b1c);
+    n += snprintf(buf + n, sizeof(buf) - n, "%s PAD:", tag);
+    for (int i = 0; i < 0x60; i++) n += snprintf(buf + n, sizeof(buf) - n, "%02x", p[i]);
+    signed char slot = *(signed char*)((char*)ped + 0x71c);
+    int wtype = *(int*)((char*)ped + 0x5a4 + slot * 0x1c);
+    n += snprintf(buf + n, sizeof(buf) - n, " slot=%d arma=%d", (int)slot, wtype);
+    Note(buf);
+}
 static int lastState = -1;
 static time_t lastToast = 0;
 static void Note(const char* msg)
@@ -34,6 +47,7 @@ static bool HookOf_PlayerOnFoot_ProcessPed(void* self, void* ped)
             lastState = state;
             lastToast = now;
             Note(state ? "MIRANDO (tarefa de arma ativa)" : "ANDANDO (sem tarefa de arma)");
+            DumpPad(state ? "mirando" : "andando", ped);
         }
     }
     return PlayerOnFoot_ProcessPed(self, ped);
@@ -43,6 +57,7 @@ extern "C" void OnModLoad()
 {
     logger->SetTag("FPS Teste");
     uintptr_t lib = aml->GetLib("libGTASA.so");
+    gLib = lib;
     if (!lib) { logger->Error("sem libGTASA"); return; }
     void* h = aml->GetLibHandle("libGTASA.so");
     GetTaskUseGun = (GetTaskUseGun_t)aml->GetSym(h, "_ZNK16CPedIntelligence13GetTaskUseGunEv");
@@ -61,7 +76,7 @@ extern "C" void OnModLoad()
             break;
         }
     }
-    Note(ok ? "v5 carregado: gancho OK" : "v5 carregado: gancho FALHOU");
-    aml->ShowToast(true, ok ? "FPS Teste v5 carregado: gancho OK" : "FPS Teste v5 carregado: gancho FALHOU");
+    Note(ok ? "v6 carregado: gancho OK" : "v6 carregado: gancho FALHOU");
+    aml->ShowToast(true, ok ? "FPS Teste v6 carregado: gancho OK" : "FPS Teste v6 carregado: gancho FALHOU");
     logger->Info("Gancho instalado");
 }
