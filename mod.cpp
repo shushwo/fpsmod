@@ -5,9 +5,9 @@
 #include <string.h>
 #include <stdint.h>
 
-MYMODCFG(net.fpsmod.teste, FPS Teste, 17.0, VoceMesmo)
+MYMODCFG(net.fpsmod.teste, FPS Teste, 18.0, VoceMesmo)
 
-// v17: esconde cabeca e tronco do CJ SO quando ele esta em moto/bicicleta/quadri
+// v18: esconde cabeca e tronco do CJ SO quando ele esta em moto/bicicleta/quadri
 // e a camera esta perto da cabeca (primeira pessoa). Nao altera arquivos.
 static void Note(const char* msg)
 {
@@ -44,6 +44,10 @@ static bool IsBikeModel(int m)
 static int gLastModel = -1;
 static bool gLastHide = false;
 static int gLogs = 0;
+
+// destino especial: ponto abaixo dos cotovelos, fora da tela
+static const int BAIXO = -100;
+static const float DESCE = 0.60f;   // metros abaixo do meio dos cotovelos
 
 static void HookOf_Render(void* ped)
 {
@@ -85,22 +89,31 @@ static void HookOf_Render(void* ped)
     // encolhe cabeca e tronco, desenha e devolve. Bracos, maos e pernas ficam.
     // {osso a encolher, osso para onde ele vai}
     static const int shrink[][2] = {
-        {5,1}, {6,1}, {7,1}, {8,1},   // cabeca, sobrancelhas, queixo -> quadril
-        {2,1}, {3,1}, {4,1},          // coluna, peito, pescoco -> quadril
-        {301,1}, {302,1},             // peitorais -> quadril
+        {5,BAIXO}, {6,BAIXO}, {7,BAIXO}, {8,BAIXO},   // cabeca, sobrancelhas, queixo
+        {2,BAIXO}, {3,BAIXO}, {4,BAIXO},              // coluna, peito, pescoco
+        {301,BAIXO}, {302,BAIXO},                     // peitorais
+        {21,23}, {22,23},     // ombro e braco esquerdo -> cotovelo esquerdo
+        {31,33}, {32,33},     // ombro e braco direito -> cotovelo direito
     };
     const int N = sizeof(shrink) / sizeof(shrink[0]);
     Matrix saved[N];
     int idx[N];
     float point[N][3];
+    int le = GetIndex(hier, 23), re = GetIndex(hier, 33);
+    if (le < 0 || le >= nodes || re < 0 || re >= nodes) { Render_orig(ped); return; }
+    float low[3];
+    for (int k = 0; k < 3; k++) low[k] = (array[le].pos[k] + array[re].pos[k]) * 0.5f;
+    low[2] -= DESCE;
+
     // guarda tudo antes de mudar qualquer osso
     for (int i = 0; i < N; i++)
     {
         idx[i] = GetIndex(hier, shrink[i][0]);
-        int to = GetIndex(hier, shrink[i][1]);
+        bool isLow = shrink[i][1] == BAIXO;
+        int to = isLow ? 0 : GetIndex(hier, shrink[i][1]);
         if (idx[i] < 0 || idx[i] >= nodes || to < 0 || to >= nodes) { idx[i] = -1; continue; }
         saved[i] = array[idx[i]];
-        memcpy(point[i], array[to].pos, sizeof(point[i]));
+        memcpy(point[i], isLow ? low : array[to].pos, sizeof(point[i]));
     }
     for (int i = 0; i < N; i++)
     {
@@ -121,7 +134,7 @@ extern "C" void OnModLoad()
     logger->SetTag("FPS Teste");
     uintptr_t lib = aml->GetLib("libGTASA.so");
     void* h = aml->GetLibHandle("libGTASA.so");
-    if (!lib || !h) { Note("v17: libGTASA nao encontrada"); return; }
+    if (!lib || !h) { Note("v18: libGTASA nao encontrada"); return; }
 
     FindPlayerPed     = (FindPlayerPed_t)aml->GetSym(h, "_Z13FindPlayerPedi");
     FindPlayerVehicle = (FindPlayerVehicle_t)aml->GetSym(h, "_Z17FindPlayerVehicleib");
@@ -134,13 +147,13 @@ extern "C" void OnModLoad()
     if (!FindPlayerPed || !FindPlayerVehicle || !GetHier || !GetIndex || !Camera
         || *slot != lib + 0x4a68f5)
     {
-        Note("v17: NAO ativado (funcao ausente ou tabela diferente)");
-        aml->ShowToast(true, "FPS Teste v17: NAO ativado");
+        Note("v18: NAO ativado (funcao ausente ou tabela diferente)");
+        aml->ShowToast(true, "FPS Teste v18: NAO ativado");
         return;
     }
     Render_orig = (Render_t)*slot;
     aml->Unprot((uintptr_t)slot, sizeof(uintptr_t));
     *slot = (uintptr_t)&HookOf_Render;
-    Note("v17 carregado: gancho OK");
-    aml->ShowToast(true, "FPS Teste v17: ativado");
+    Note("v18 carregado: gancho OK");
+    aml->ShowToast(true, "FPS Teste v18: ativado");
 }
