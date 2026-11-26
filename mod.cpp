@@ -3,9 +3,9 @@
 #include <mod/config.h>
 #include <stdio.h>
 
-MYMODCFG(net.fpsmod.teste, FPS Teste, 12.0, VoceMesmo)
+MYMODCFG(net.fpsmod.teste, FPS Teste, 13.0, VoceMesmo)
 
-// v12: so grava enderecos em fpsteste.txt. Nao altera nada no jogo.
+// v13: so grava enderecos em fpsteste.txt. Nao altera nada no jogo.
 static void Note(const char* msg)
 {
     char path[512];
@@ -19,25 +19,49 @@ extern "C" void OnModLoad()
     logger->SetTag("FPS Teste");
     uintptr_t lib = aml->GetLib("libGTASA.so");
     void* h = aml->GetLibHandle("libGTASA.so");
-    if (!lib || !h) { Note("v12: libGTASA nao encontrada"); return; }
+    if (!lib || !h) { Note("v13: libGTASA nao encontrada"); return; }
 
     static const char* names[] = {
-        "_ZN4CPed15GetBonePositionER5RwV3djb",
-        "_ZN4CPed26GetTransformedBonePositionER5RwV3djb",
-        "_ZN6CPools6GetPedEi",
-        "_ZN6CPools9GetPedRefEP4CPed",
-        "_Z13FindPlayerPedi",
+        "_ZN4CPed9PreRenderEv",
+        "_ZN4CPed6RenderEv",
+        "_ZN4CPed17PreRenderAfterTestEv",
+        "_ZN10CPlayerPed9PreRenderEv",
+        "_ZN10CPlayerPed6RenderEv",
+        "_ZTV10CPlayerPed",
+        "_Z29GetAnimHierarchyFromSkinClumpP7RpClump",
+        "_Z17RpHAnimIDGetIndexP16RpHAnimHierarchyi",
+        "RpHAnimIDGetIndex",
+        "_Z32RpHAnimHierarchyGetMatrixArrayP16RpHAnimHierarchy",
+        "RpHAnimHierarchyGetMatrixArray",
+        "RwMatrixScale",
+        "_Z13RwMatrixScaleP11RwMatrixTagPK5RwV3d15RwOpCombineType",
+        "TheCamera",
     };
+    const unsigned count = sizeof(names) / sizeof(names[0]);
+    uintptr_t addr[count];
+    char b[220];
 
-    Note("v12: enderecos");
-    for (unsigned i = 0; i < sizeof(names) / sizeof(names[0]); i++)
+    Note("v13: enderecos");
+    for (unsigned i = 0; i < count; i++)
     {
-        uintptr_t a = (uintptr_t)aml->GetSym(h, names[i]);
-        char b[200];
-        if (a) snprintf(b, sizeof(b), "%s = 0x%x", names[i], (unsigned)(a - lib));
+        addr[i] = (uintptr_t)aml->GetSym(h, names[i]);
+        if (addr[i]) snprintf(b, sizeof(b), "%s = 0x%x", names[i], (unsigned)(addr[i] - lib));
         else snprintf(b, sizeof(b), "%s = NAO ENCONTRADO", names[i]);
         Note(b);
     }
-    Note("v12: fim");
-    aml->ShowToast(true, "FPS Teste v12: enderecos gravados");
+
+    // em que posicao da tabela do jogador estao as funcoes de desenho (so leitura)
+    uintptr_t vt = addr[5];
+    if (vt)
+    {
+        for (int slot = 0; slot < 40; slot++)
+        {
+            uintptr_t v = *(uintptr_t*)(vt + 8 + slot * 4);
+            snprintf(b, sizeof(b), "tabela[%d] slot=0x%x valor=0x%x", slot,
+                     (unsigned)(vt + 8 + slot * 4 - lib), (unsigned)(v - lib));
+            Note(b);
+        }
+    }
+    Note("v13: fim");
+    aml->ShowToast(true, "FPS Teste v13: enderecos gravados");
 }
