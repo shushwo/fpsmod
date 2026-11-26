@@ -4,7 +4,7 @@
 #include <time.h>
 #include <math.h>
 
-MYMODCFG(net.fpsmod.teste, FPS Teste, 9.0, VoceMesmo)
+MYMODCFG(net.fpsmod.teste, FPS Teste, 10.0, VoceMesmo)
 
 static uintptr_t gLib = 0;
 typedef void* (*GetTaskUseGun_t)(void* intelligence);
@@ -22,7 +22,9 @@ static void Note(const char* msg)
 
 struct Vec2 { float x, y; };
 static float gStickX = 0, gStickY = 0;
-static bool gForce = false;
+static bool gWant = false;
+static bool gOurs = false;
+static int gState = 0;
 static int gLogs = 0;
 
 static bool HoldingFirearm()
@@ -46,22 +48,25 @@ static bool HookOf_IsTouched(int id, Vec2* v, int n)
         bool r = IsTouched_orig(id, v, n);
         if (r && v) { gStickX = v->x; gStickY = v->y; }
         else { gStickX = 0; gStickY = 0; }
-        // decide se forca a mira: andando de lado com arma de fogo
-        bool want = (fabsf(gStickX) > 0.6f) && HoldingFirearm();
-        if (want != gForce)
+        float ax = fabsf(gStickX);
+        bool on = (ax > 50.0f) || (gStickY > 50.0f);
+        bool off = (ax < 25.0f) && (gStickY < 25.0f);
+        bool want = gWant;
+        if (!gWant && on && HoldingFirearm()) want = true;
+        else if (gWant && (off || !HoldingFirearm())) want = false;
+        if (want != gWant)
         {
-            gForce = want;
-            if (gLogs < 150)
+            gWant = want;
+            if (gLogs < 200)
             {
                 gLogs++;
                 char b[100];
-                snprintf(b, sizeof(b), "FORCA %s x=%.2f y=%.2f", want ? "LIGADA" : "desligada", gStickX, gStickY);
+                snprintf(b, sizeof(b), "QUER-MIRA %s x=%.0f y=%.0f", want ? "SIM" : "nao", gStickX, gStickY);
                 Note(b);
             }
         }
         return r;
     }
-    if (id == 0x13 && gForce) return true;
     return IsTouched_orig(id, v, n);
 }
 
@@ -75,7 +80,9 @@ static bool HookOf_ProcessPed(void* self, void* ped)
     {
         void* intel = *(void**)((char*)ped + 0x440);
         int state = (intel && GetTaskUseGun(intel)) ? 1 : 0;
-        if (state != lastState && gLogs < 150)
+        gState = state;
+        if (state == 0) gOurs = false;
+        if (state != lastState && gLogs < 200)
         {
             lastState = state;
             gLogs++;
@@ -83,6 +90,30 @@ static bool HookOf_ProcessPed(void* self, void* ped)
         }
     }
     return ProcessPed_orig(self, ped);
+}
+
+typedef bool (*PadBool_t)(void*);
+static PadBool_t Enter_orig = NULL, Exit_orig = NULL;
+static bool HookOf_Enter(void* pad)
+{
+    bool r = Enter_orig(pad);
+    if (!r && gWant && gState == 0)
+    {
+        if (!gOurs && gLogs < 200) { gLogs++; Note("ENTRA forcado"); }
+        gOurs = true;
+        return true;
+    }
+    return r;
+}
+static bool HookOf_Exit(void* pad)
+{
+    bool r = Exit_orig(pad);
+    if (!r && gOurs && !gWant && gState == 1)
+    {
+        if (gLogs < 200) { gLogs++; Note("SAI forcado"); }
+        return true;
+    }
+    return r;
 }
 
 static bool PatchGot(uintptr_t gotOff, uintptr_t expectedFn, void* hook, void** orig)
@@ -120,6 +151,9 @@ extern "C" void OnModLoad()
         }
     }
     bool ok2 = PatchGot(0x674388, 0x2b0cbd, (void*)&HookOf_IsTouched, (void**)&IsTouched_orig);
-    Note(ok2 && FindPlayerPed ? "v9 carregado: ganchos OK" : "v9 carregado: ALGUM GANCHO FALHOU");
-    aml->ShowToast(true, ok && ok2 ? "FPS Teste v9: ganchos OK" : "FPS Teste v9: gancho FALHOU");
+    bool ok3 = PatchGot(0x675260, 0x3fb49d, (void*)&HookOf_Enter, (void**)&Enter_orig);
+    bool ok4 = PatchGot(0x66e8d0, 0x3fb72d, (void*)&HookOf_Exit, (void**)&Exit_orig);
+    ok2 = ok2 && ok3 && ok4;
+    Note(ok2 && FindPlayerPed ? "v10 carregado: ganchos OK" : "v10 carregado: ALGUM GANCHO FALHOU");
+    aml->ShowToast(true, ok && ok2 ? "FPS Teste v10: ganchos OK" : "FPS Teste v10: gancho FALHOU");
 }
