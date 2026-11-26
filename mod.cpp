@@ -2,10 +2,13 @@
 #include <mod/logger.h>
 #include <mod/config.h>
 #include <stdio.h>
+#include <string.h>
+#include <stdint.h>
 
-MYMODCFG(net.fpsmod.teste, FPS Teste, 13.0, VoceMesmo)
+MYMODCFG(net.fpsmod.teste, FPS Teste, 14.0, VoceMesmo)
 
-// v13: so grava enderecos em fpsteste.txt. Nao altera nada no jogo.
+// v14: esconde a cabeca do CJ SO quando ele esta em moto/bicicleta/quadri
+// e a camera esta perto da cabeca (primeira pessoa). Nao altera arquivos.
 static void Note(const char* msg)
 {
     char path[512];
@@ -14,54 +17,117 @@ static void Note(const char* msg)
     if (f) { fprintf(f, "%s\n", msg); fclose(f); }
 }
 
+typedef void* (*FindPlayerPed_t)(int);
+typedef void* (*FindPlayerVehicle_t)(int, bool);
+typedef void* (*GetHier_t)(void*);
+typedef int   (*GetIndex_t)(void*, int);
+typedef void  (*Render_t)(void*);
+
+static FindPlayerPed_t     FindPlayerPed;
+static FindPlayerVehicle_t FindPlayerVehicle;
+static GetHier_t           GetHier;
+static GetIndex_t          GetIndex;
+static Render_t            Render_orig;
+static char*               Camera;
+
+struct Matrix { float right[3]; uint32_t flags; float up[3]; uint32_t p1;
+                float at[3]; uint32_t p2; float pos[3]; uint32_t p3; };
+
+static bool IsBikeModel(int m)
+{
+    static const int bikes[] = { 448,461,462,463,468,471,481,509,510,521,522,523,581,586 };
+    for (unsigned i = 0; i < sizeof(bikes) / sizeof(bikes[0]); i++)
+        if (bikes[i] == m) return true;
+    return false;
+}
+
+static int gLastModel = -1;
+static bool gLastHide = false;
+static int gLogs = 0;
+
+static void HookOf_Render(void* ped)
+{
+    if (ped != FindPlayerPed(-1)) { Render_orig(ped); return; }
+
+    void* veh = FindPlayerVehicle(-1, false);
+    int model = veh ? *(uint16_t*)((char*)veh + 0x26) : 0;
+
+    void* clump = *(void**)((char*)ped + 0x18);
+    void* hier = (veh && clump) ? GetHier(clump) : NULL;
+    Matrix* array = hier ? *(Matrix**)((char*)hier + 8) : NULL;
+    int nodes = hier ? *(int*)((char*)hier + 4) : 0;
+    int head = array ? GetIndex(hier, 5) : -1;
+    char* camMatrix = *(char**)(Camera + 0x14);
+
+    bool hide = false;
+    float dist2 = -1.0f;
+    if (head >= 0 && head < nodes && nodes < 100 && camMatrix)
+    {
+        float* c = (float*)(camMatrix + 0x30);
+        float dx = array[head].pos[0] - c[0];
+        float dy = array[head].pos[1] - c[1];
+        float dz = array[head].pos[2] - c[2];
+        dist2 = dx * dx + dy * dy + dz * dz;
+        hide = IsBikeModel(model) && dist2 < 1.2f * 1.2f;
+    }
+
+    if ((model != gLastModel || hide != gLastHide) && gLogs < 200)
+    {
+        gLastModel = model; gLastHide = hide; gLogs++;
+        char b[160];
+        snprintf(b, sizeof(b), "veiculo=%d cabeca=%d ossos=%d dist2=%.2f esconder=%s",
+                 model, head, nodes, dist2, hide ? "sim" : "nao");
+        Note(b);
+    }
+
+    if (!hide) { Render_orig(ped); return; }
+
+    // encolhe cabeca, sobrancelhas e queixo em um ponto, desenha e devolve
+    Matrix saved[4];
+    int idx[4];
+    float point[3];
+    memcpy(point, array[head].pos, sizeof(point));
+    for (int i = 0; i < 4; i++)
+    {
+        idx[i] = GetIndex(hier, 5 + i);
+        if (idx[i] < 0 || idx[i] >= nodes) { idx[i] = -1; continue; }
+        Matrix* m = &array[idx[i]];
+        saved[i] = *m;
+        memset(m->right, 0, sizeof(m->right));
+        memset(m->up, 0, sizeof(m->up));
+        memset(m->at, 0, sizeof(m->at));
+        memcpy(m->pos, point, sizeof(point));
+    }
+    Render_orig(ped);
+    for (int i = 0; i < 4; i++)
+        if (idx[i] >= 0) array[idx[i]] = saved[i];
+}
+
 extern "C" void OnModLoad()
 {
     logger->SetTag("FPS Teste");
     uintptr_t lib = aml->GetLib("libGTASA.so");
     void* h = aml->GetLibHandle("libGTASA.so");
-    if (!lib || !h) { Note("v13: libGTASA nao encontrada"); return; }
+    if (!lib || !h) { Note("v14: libGTASA nao encontrada"); return; }
 
-    static const char* names[] = {
-        "_ZN4CPed9PreRenderEv",
-        "_ZN4CPed6RenderEv",
-        "_ZN4CPed17PreRenderAfterTestEv",
-        "_ZN10CPlayerPed9PreRenderEv",
-        "_ZN10CPlayerPed6RenderEv",
-        "_ZTV10CPlayerPed",
-        "_Z29GetAnimHierarchyFromSkinClumpP7RpClump",
-        "_Z17RpHAnimIDGetIndexP16RpHAnimHierarchyi",
-        "RpHAnimIDGetIndex",
-        "_Z32RpHAnimHierarchyGetMatrixArrayP16RpHAnimHierarchy",
-        "RpHAnimHierarchyGetMatrixArray",
-        "RwMatrixScale",
-        "_Z13RwMatrixScaleP11RwMatrixTagPK5RwV3d15RwOpCombineType",
-        "TheCamera",
-    };
-    const unsigned count = sizeof(names) / sizeof(names[0]);
-    uintptr_t addr[count];
-    char b[220];
+    FindPlayerPed     = (FindPlayerPed_t)aml->GetSym(h, "_Z13FindPlayerPedi");
+    FindPlayerVehicle = (FindPlayerVehicle_t)aml->GetSym(h, "_Z17FindPlayerVehicleib");
+    GetHier  = (GetHier_t)aml->GetSym(h, "_Z29GetAnimHierarchyFromSkinClumpP7RpClump");
+    GetIndex = (GetIndex_t)aml->GetSym(h, "_Z17RpHAnimIDGetIndexP16RpHAnimHierarchyi");
+    Camera   = (char*)aml->GetSym(h, "TheCamera");
 
-    Note("v13: enderecos");
-    for (unsigned i = 0; i < count; i++)
+    // posicao de CPed::Render na tabela do jogador (conferida no log da v13)
+    uintptr_t* slot = (uintptr_t*)(lib + 0x6692d4);
+    if (!FindPlayerPed || !FindPlayerVehicle || !GetHier || !GetIndex || !Camera
+        || *slot != lib + 0x4a68f5)
     {
-        addr[i] = (uintptr_t)aml->GetSym(h, names[i]);
-        if (addr[i]) snprintf(b, sizeof(b), "%s = 0x%x", names[i], (unsigned)(addr[i] - lib));
-        else snprintf(b, sizeof(b), "%s = NAO ENCONTRADO", names[i]);
-        Note(b);
+        Note("v14: NAO ativado (funcao ausente ou tabela diferente)");
+        aml->ShowToast(true, "FPS Teste v14: NAO ativado");
+        return;
     }
-
-    // em que posicao da tabela do jogador estao as funcoes de desenho (so leitura)
-    uintptr_t vt = addr[5];
-    if (vt)
-    {
-        for (int slot = 0; slot < 40; slot++)
-        {
-            uintptr_t v = *(uintptr_t*)(vt + 8 + slot * 4);
-            snprintf(b, sizeof(b), "tabela[%d] slot=0x%x valor=0x%x", slot,
-                     (unsigned)(vt + 8 + slot * 4 - lib), (unsigned)(v - lib));
-            Note(b);
-        }
-    }
-    Note("v13: fim");
-    aml->ShowToast(true, "FPS Teste v13: enderecos gravados");
+    Render_orig = (Render_t)*slot;
+    aml->Unprot((uintptr_t)slot, sizeof(uintptr_t));
+    *slot = (uintptr_t)&HookOf_Render;
+    Note("v14 carregado: gancho OK");
+    aml->ShowToast(true, "FPS Teste v14: ativado");
 }
