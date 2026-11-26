@@ -5,9 +5,9 @@
 #include <string.h>
 #include <stdint.h>
 
-MYMODCFG(net.fpsmod.teste, FPS Teste, 15.0, VoceMesmo)
+MYMODCFG(net.fpsmod.teste, FPS Teste, 16.0, VoceMesmo)
 
-// v15: esconde cabeca e tronco do CJ SO quando ele esta em moto/bicicleta/quadri
+// v16: esconde cabeca e tronco do CJ SO quando ele esta em moto/bicicleta/quadri
 // e a camera esta perto da cabeca (primeira pessoa). Nao altera arquivos.
 static void Note(const char* msg)
 {
@@ -85,9 +85,9 @@ static void HookOf_Render(void* ped)
     // encolhe cabeca e tronco, desenha e devolve. Bracos, maos e pernas ficam.
     // {osso a encolher, osso para onde ele vai}
     static const int shrink[][2] = {
-        {5,5}, {6,5}, {7,5}, {8,5},   // cabeca, sobrancelhas, queixo
-        {2,2}, {3,3}, {4,4},          // coluna, peito, pescoco
-        {301,3}, {302,3},             // peitorais
+        {5,1}, {6,1}, {7,1}, {8,1},   // cabeca, sobrancelhas, queixo -> quadril
+        {2,1}, {3,1}, {4,1},          // coluna, peito, pescoco -> quadril
+        {301,1}, {302,1},             // peitorais -> quadril
         {31,32}, {21,22},             // claviculas -> junta do ombro
     };
     const int N = sizeof(shrink) / sizeof(shrink[0]);
@@ -122,7 +122,7 @@ extern "C" void OnModLoad()
     logger->SetTag("FPS Teste");
     uintptr_t lib = aml->GetLib("libGTASA.so");
     void* h = aml->GetLibHandle("libGTASA.so");
-    if (!lib || !h) { Note("v15: libGTASA nao encontrada"); return; }
+    if (!lib || !h) { Note("v16: libGTASA nao encontrada"); return; }
 
     FindPlayerPed     = (FindPlayerPed_t)aml->GetSym(h, "_Z13FindPlayerPedi");
     FindPlayerVehicle = (FindPlayerVehicle_t)aml->GetSym(h, "_Z17FindPlayerVehicleib");
@@ -135,13 +135,13 @@ extern "C" void OnModLoad()
     if (!FindPlayerPed || !FindPlayerVehicle || !GetHier || !GetIndex || !Camera
         || *slot != lib + 0x4a68f5)
     {
-        Note("v15: NAO ativado (funcao ausente ou tabela diferente)");
-        aml->ShowToast(true, "FPS Teste v15: NAO ativado");
+        Note("v16: NAO ativado (funcao ausente ou tabela diferente)");
+        aml->ShowToast(true, "FPS Teste v16: NAO ativado");
         return;
     }
     Render_orig = (Render_t)*slot;
     aml->Unprot((uintptr_t)slot, sizeof(uintptr_t));
     *slot = (uintptr_t)&HookOf_Render;
-    Note("v15 carregado: gancho OK");
-    aml->ShowToast(true, "FPS Teste v15: ativado");
+    Note("v16 carregado: gancho OK");
+    aml->ShowToast(true, "FPS Teste v16: ativado");
 }
