@@ -4,15 +4,12 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
-#include <stdlib.h>
-#include <elf.h>
-#include <link.h>
 #include <math.h>
 #include <time.h>
 
-MYMODCFG(net.fpsmod.teste, FPS Teste, 28.0, VoceMesmo)
+MYMODCFG(net.fpsmod.teste, FPS Teste, 29.0, VoceMesmo)
 
-// v28: com a camera perto (1a pessoa), esconde cabeca e tronco em moto/bicicleta/
+// v29: com a camera perto (1a pessoa), esconde cabeca e tronco em moto/bicicleta/
 // quadri e so a cabeca nos outros veiculos, a pe e nadando
 // e a camera esta perto da cabeca (primeira pessoa). Nao altera arquivos.
 static void Note(const char* msg)
@@ -21,136 +18,6 @@ static void Note(const char* msg)
     snprintf(path, sizeof(path), "%s/fpsteste.txt", aml->GetAndroidDataPath());
     FILE* f = fopen(path, "a");
     if (f) { fprintf(f, "%s\n", msg); fclose(f); }
-}
-
-// v28: SO LE. Descobre o nome das funcoes chamadas nos pontos que o script altera.
-// procura o caminho do arquivo da biblioteca no mapa de memoria do jogo
-static bool AcharCaminho(char* caminho, size_t tam)
-{
-    FILE* f = fopen("/proc/self/maps", "r");
-    if (!f) return false;
-    char linha[600];
-    bool ok = false;
-    while (!ok && fgets(linha, sizeof(linha), f))
-    {
-        char* p = strchr(linha, '/');
-        if (!p || !strstr(p, "libGTASA")) continue;
-        p[strcspn(p, "\n")] = 0;
-        snprintf(caminho, tam, "%s", p);
-        ok = true;
-    }
-    fclose(f);
-    return ok;
-}
-
-// so deixa ler a memoria se o endereco estiver numa area legivel
-static bool Legivel(uintptr_t a)
-{
-    FILE* f = fopen("/proc/self/maps", "r");
-    if (!f) return false;
-    char linha[600];
-    bool ok = false;
-    while (!ok && fgets(linha, sizeof(linha), f))
-    {
-        unsigned long ini, fim; char perm[8];
-        if (sscanf(linha, "%lx-%lx %7s", &ini, &fim, perm) == 3)
-            ok = a >= ini && a + sizeof(uintptr_t) <= fim && perm[0] == 'r';
-    }
-    fclose(f);
-    return ok;
-}
-
-static void* Ler(FILE* f, size_t pos, size_t tam)
-{
-    if (!tam || tam > 32u * 1024 * 1024) return NULL;
-    char* m = (char*)malloc(tam + 1);
-    if (!m) return NULL;
-    if (fseek(f, (long)pos, SEEK_SET) || fread(m, 1, tam, f) != tam) { free(m); return NULL; }
-    m[tam] = 0;
-    return m;
-}
-
-// valor imediato de uma instrucao ARM (8 bits girados)
-static uint32_t ImmArm(uint32_t i)
-{
-    uint32_t v = i & 0xff, r = ((i >> 8) & 0xf) * 2;
-    return r ? (v >> r) | (v << (32 - r)) : v;
-}
-
-// se o endereco for um "atalho" para outra funcao (PLT), devolve onde esta
-// guardado o destino; senao devolve 0. a = endereco relativo, p = bytes de la
-static uintptr_t EntradaDoAtalho(uintptr_t a, const unsigned char* p)
-{
-    if (p[0] == 0x78 && p[1] == 0x47) { a += 4; p += 4; }    // bx pc ; nop
-    uint32_t i[3];
-    memcpy(i, p, sizeof(i));
-    if ((i[0] & 0xfffff000) != 0xe28fc000 || (i[1] & 0xfffff000) != 0xe28cc000
-        || (i[2] & 0xfffff000) != 0xe5bcf000) return 0;
-    return (uint32_t)(a + 8 + ImmArm(i[0]) + ImmArm(i[1]) + (i[2] & 0xfff));
-}
-
-static void Diagnostico(uintptr_t lib)
-{
-    // destinos calculados a partir dos bytes vistos no log da v27:
-    // chamada original em 0x3f4082, original em 0x3f4342 e a que o script poe la
-    static const uintptr_t pedido[] = { 0x198b14, 0x196a50, 0x32ae88 };
-    uintptr_t alvo[3];
-    for (int k = 0; k < 3; k++)
-    {
-        alvo[k] = pedido[k];
-        unsigned char p[16];
-        if (!Legivel(lib + pedido[k]) || !Legivel(lib + pedido[k] + 12)) continue;
-        memcpy(p, (const void*)(lib + pedido[k]), sizeof(p));
-        uintptr_t e = EntradaDoAtalho(pedido[k], p);
-        char c[200];
-        snprintf(c, sizeof(c), "diag: destino 0x%lx bytes=%02x%02x%02x%02x entrada=0x%lx",
-                 (unsigned long)pedido[k], p[0], p[1], p[2], p[3], (unsigned long)e);
-        Note(c);
-        if (e && Legivel(lib + e))
-        {
-            uintptr_t valor = *(const uintptr_t*)(lib + e);
-            alvo[k] = (valor - lib) & ~(uintptr_t)1;
-        }
-    }
-    const int N = 3;
-    char caminho[512], b[700];
-    if (!AcharCaminho(caminho, sizeof(caminho))) { Note("diag: caminho nao encontrado"); return; }
-    FILE* f = fopen(caminho, "rb");
-    if (!f) { Note("diag: nao consegui abrir o arquivo"); return; }
-    ElfW(Ehdr) eh;
-    if (fread(&eh, 1, sizeof(eh), f) != sizeof(eh) || memcmp(eh.e_ident, ELFMAG, SELFMAG)
-        || eh.e_shentsize != sizeof(ElfW(Shdr)))
-    { Note("diag: cabecalho inesperado"); fclose(f); return; }
-    ElfW(Shdr)* sh = (ElfW(Shdr)*)Ler(f, eh.e_shoff, (size_t)eh.e_shnum * sizeof(ElfW(Shdr)));
-    if (!sh) { Note("diag: sem tabela de secoes"); fclose(f); return; }
-    int ds = -1;
-    for (int i = 0; i < eh.e_shnum; i++)
-        if (sh[i].sh_type == SHT_DYNSYM) ds = i;
-    if (ds < 0 || sh[ds].sh_link >= eh.e_shnum)
-    { Note("diag: sem tabela de simbolos"); free(sh); fclose(f); return; }
-    ElfW(Sym)* sym = (ElfW(Sym)*)Ler(f, sh[ds].sh_offset, sh[ds].sh_size);
-    char* str = (char*)Ler(f, sh[sh[ds].sh_link].sh_offset, sh[sh[ds].sh_link].sh_size);
-    size_t nsym = sym ? sh[ds].sh_size / sizeof(ElfW(Sym)) : 0;
-    size_t nstr = str ? sh[sh[ds].sh_link].sh_size : 0;
-
-    for (int k = 0; k < N; k++)
-    {
-        size_t melhor = 0;
-        uintptr_t inicio = 0;
-        for (size_t s = 1; s < nsym; s++)
-        {
-            uintptr_t v = sym[s].st_value & ~(uintptr_t)1;
-            if ((sym[s].st_info & 0xf) != STT_FUNC || sym[s].st_name >= nstr) continue;
-            if (v && v <= alvo[k] && v > inicio) { inicio = v; melhor = s; }
-        }
-        snprintf(b, sizeof(b), "diag: 0x%lx vai para 0x%lx = %s +0x%lx",
-                 (unsigned long)pedido[k], (unsigned long)alvo[k],
-                 melhor ? str + sym[melhor].st_name : "?",
-                 (unsigned long)(alvo[k] - inicio));
-        Note(b);
-    }
-    Note("diag: fim");
-    free(sym); free(str); free(sh); fclose(f);
 }
 
 typedef void* (*FindPlayerPed_t)(int);
@@ -325,10 +192,24 @@ static void HookOf_Render(void* ped)
         saved[i] = array[idx[i]];
         memcpy(point[i], isLow ? low : array[to].pos, sizeof(point[i]));
     }
+    // a pe/nadando: recolhe a cabeca para dentro do pescoco, o que mantem a gola
+    // fechada (com NaN ficava um buraco e dava para ver dentro do corpo)
+    int pescoco = veh ? -1 : GetIndex(hier, 4);
+    float gola[3] = { 0, 0, 0 };
+    if (pescoco >= 0 && pescoco < nodes) memcpy(gola, array[pescoco].pos, sizeof(gola));
+    else pescoco = -1;
     for (int i = 0; i < N; i++)
     {
         if (idx[i] < 0) continue;
         Matrix* m = &array[idx[i]];
+        if (pescoco >= 0)
+        {
+            memset(m->right, 0, sizeof(m->right));
+            memset(m->up, 0, sizeof(m->up));
+            memset(m->at, 0, sizeof(m->at));
+            memcpy(m->pos, gola, sizeof(gola));
+            continue;
+        }
         // posicao invalida (NaN): o chip grafico descarta todo triangulo
         // ligado a este osso, sem deixar fio entre o braco e o tronco
         for (int k = 0; k < 3; k++)
@@ -387,9 +268,7 @@ extern "C" void OnModLoad()
     logger->SetTag("FPS Teste");
     uintptr_t lib = aml->GetLib("libGTASA.so");
     void* h = aml->GetLibHandle("libGTASA.so");
-    if (!lib || !h) { Note("v28: libGTASA nao encontrada"); return; }
-
-    Diagnostico(lib);
+    if (!lib || !h) { Note("v29: libGTASA nao encontrada"); return; }
 
     FindPlayerPed     = (FindPlayerPed_t)aml->GetSym(h, "_Z13FindPlayerPedi");
     FindPlayerVehicle = (FindPlayerVehicle_t)aml->GetSym(h, "_Z17FindPlayerVehicleib");
@@ -402,14 +281,14 @@ extern "C" void OnModLoad()
     if (!FindPlayerPed || !FindPlayerVehicle || !GetHier || !GetIndex || !Camera
         || *slot != lib + 0x4a68f5)
     {
-        Note("v28: NAO ativado (funcao ausente ou tabela diferente)");
-        aml->ShowToast(true, "FPS Teste v28: NAO ativado");
+        Note("v29: NAO ativado (funcao ausente ou tabela diferente)");
+        aml->ShowToast(true, "FPS Teste v29: NAO ativado");
         return;
     }
     Render_orig = (Render_t)*slot;
     aml->Unprot((uintptr_t)slot, sizeof(uintptr_t));
     *slot = (uintptr_t)&HookOf_Render;
-    Note("v28 carregado: gancho OK");
+    Note("v29 carregado: gancho OK");
 
     // entrada por onde o jogo prende a camera (conferida no log da v23)
     uintptr_t* slotCam = (uintptr_t*)(lib + 0x66ead8);
@@ -421,8 +300,8 @@ extern "C" void OnModLoad()
         char path[512];
         snprintf(path, sizeof(path), "%s/fpsajustes.txt", aml->GetAndroidDataPath());
         LerAjustes(path);
-        Note("v28: ajuste de camera OK");
+        Note("v29: ajuste de camera OK");
     }
-    else Note("v28: ajuste de camera NAO ativado (entrada diferente)");
-    aml->ShowToast(true, "FPS Teste v28: ativado");
+    else Note("v29: ajuste de camera NAO ativado (entrada diferente)");
+    aml->ShowToast(true, "FPS Teste v29: ativado");
 }
