@@ -7,9 +7,9 @@
 #include <math.h>
 #include <time.h>
 
-MYMODCFG(net.fpsmod.teste, FPS Teste, 25.0, VoceMesmo)
+MYMODCFG(net.fpsmod.teste, FPS Teste, 26.0, VoceMesmo)
 
-// v25: com a camera perto (1a pessoa), esconde cabeca e tronco em moto/bicicleta/
+// v26: com a camera perto (1a pessoa), esconde cabeca e tronco em moto/bicicleta/
 // quadri e so a cabeca nos outros veiculos
 // e a camera esta perto da cabeca (primeira pessoa). Nao altera arquivos.
 static void Note(const char* msg)
@@ -38,6 +38,7 @@ struct Vec3 { float x, y, z; };
 struct Ajuste { int modelo; float frente, altura, inclina; };
 static Ajuste gAjustes[64];
 static int gNumAjustes = 0;
+static int gVidro = 0;      // 0 = nao mexe nos vidros
 
 static const char* PADRAO =
     "# Ajuste da camera em primeira pessoa, um veiculo por linha:\n"
@@ -46,6 +47,8 @@ static const char* PADRAO =
     "# altura: metros (positivo = mais alta, negativo = mais baixa)\n"
     "# inclinacao: graus (positivo = olha mais para baixo)\n"
     "# Salve o arquivo e volte ao jogo: vale em ate 2 segundos.\n"
+    "# vidro N: transparencia dos vidros (menor = mais claro; 0 = nao mexe)\n"
+    "vidro 0\n"
     "# BMX\n"
     "481  0.00  -0.05  8\n"
     "# Bike\n"
@@ -71,10 +74,17 @@ static void LerAjustes(const char* caminho)
     }
     char linha[200];
     int n = 0;
+    gVidro = 0;
     while (n < 64 && fgets(linha, sizeof(linha), f))
     {
         for (char* p = linha; *p; p++)
             if (*p == ',') *p = '.';      // aceita 0,10 e 0.10
+        int vidro;
+        if (sscanf(linha, " vidro %d", &vidro) == 1)
+        {
+            gVidro = vidro < 0 ? 0 : vidro > 250 ? 250 : vidro;
+            continue;
+        }
         Ajuste a = { 0, 0, 0, 0 };
         if (sscanf(linha, "%d %f %f %f", &a.modelo, &a.frente, &a.altura, &a.inclina) < 2
             || a.modelo <= 0) continue;
@@ -204,6 +214,57 @@ static void HookOf_Render(void* ped)
         if (idx[i] >= 0) array[idx[i]] = saved[i];
 }
 
+// ---- vidros mais claros (linha "vidro N" no fpsajustes.txt) ----
+// Muda so a transparencia, na memoria, dos materiais que ja sao transparentes
+// no veiculo em que o CJ esta. Nao remove o vidro nem altera arquivos.
+typedef void* (*ForAllAtomics_t)(void*, void* (*)(void*, void*), void*);
+typedef void* (*ForAllMaterials_t)(void*, void* (*)(void*, void*), void*);
+static ForAllAtomics_t   ForAllAtomics;
+static ForAllMaterials_t ForAllMaterials;
+
+struct Vidro { int valor; int achados; int pecas; char alfas[120]; };
+static unsigned char gModeloVisto[32];   // um bit por modelo ja anotado
+
+static void* CadaMaterial(void* material, void* dados)
+{
+    Vidro* v = (Vidro*)dados;
+    unsigned char* alfa = (unsigned char*)material + 7;   // RpMaterial.color.alpha
+    if (*alfa == 0 || *alfa == 255) return material;      // so o que e translucido
+    size_t n = strlen(v->alfas);
+    if (v->achados < 20) snprintf(v->alfas + n, sizeof(v->alfas) - n, " %d", *alfa);
+    v->achados++;
+    if (v->valor > 0) *alfa = (unsigned char)v->valor;
+    return material;
+}
+
+static void* CadaPeca(void* atomic, void* dados)
+{
+    void* geometria = *(void**)((char*)atomic + 0x18);
+    // confere se e mesmo uma geometria (tipo 8) antes de mexer
+    if (!geometria || *(unsigned char*)geometria != 8) return atomic;
+    ((Vidro*)dados)->pecas++;
+    ForAllMaterials(geometria, CadaMaterial, dados);
+    return atomic;
+}
+
+static void ClarearVidros(void* veiculo, int modelo, int valor)
+{
+    if (valor <= 0 || !ForAllAtomics || !ForAllMaterials) return;
+    void* clump = *(void**)((char*)veiculo + 0x18);
+    if (!clump || *(unsigned char*)clump != 2) return;    // 2 = clump
+    Vidro v = { valor, 0, 0, "" };
+    ForAllAtomics(clump, CadaPeca, &v);
+    int i = modelo - 400;
+    if (i >= 0 && i < 256 && !(gModeloVisto[i / 8] & (1 << (i % 8))))
+    {
+        gModeloVisto[i / 8] |= 1 << (i % 8);
+        char b[220];
+        snprintf(b, sizeof(b), "vidro modelo=%d pecas=%d translucidos=%d valores:%s",
+                 modelo, v.pecas, v.achados, v.alfas);
+        Note(b);
+    }
+}
+
 typedef void (*Attach_t)(void*, void*, void*, Vec3*, Vec3*, float, short, int);
 static Attach_t Attach_orig;
 static int gUltimoCam = -1;
@@ -232,6 +293,8 @@ static void HookOf_Attach(void* cam, void* alvo, void* preso, Vec3* pos, Vec3* o
         gUltimaLeitura = agora;
     }
 
+    ClarearVidros(veh, modelo, gVidro);
+
     Vec3 p = *pos, o = *olhar;       // copias: nao mexe nos valores do jogo
     bool mudou = Ajustar(modelo, &p, &o);
 
@@ -252,7 +315,7 @@ extern "C" void OnModLoad()
     logger->SetTag("FPS Teste");
     uintptr_t lib = aml->GetLib("libGTASA.so");
     void* h = aml->GetLibHandle("libGTASA.so");
-    if (!lib || !h) { Note("v25: libGTASA nao encontrada"); return; }
+    if (!lib || !h) { Note("v26: libGTASA nao encontrada"); return; }
 
     FindPlayerPed     = (FindPlayerPed_t)aml->GetSym(h, "_Z13FindPlayerPedi");
     FindPlayerVehicle = (FindPlayerVehicle_t)aml->GetSym(h, "_Z17FindPlayerVehicleib");
@@ -265,14 +328,20 @@ extern "C" void OnModLoad()
     if (!FindPlayerPed || !FindPlayerVehicle || !GetHier || !GetIndex || !Camera
         || *slot != lib + 0x4a68f5)
     {
-        Note("v25: NAO ativado (funcao ausente ou tabela diferente)");
-        aml->ShowToast(true, "FPS Teste v25: NAO ativado");
+        Note("v26: NAO ativado (funcao ausente ou tabela diferente)");
+        aml->ShowToast(true, "FPS Teste v26: NAO ativado");
         return;
     }
     Render_orig = (Render_t)*slot;
     aml->Unprot((uintptr_t)slot, sizeof(uintptr_t));
     *slot = (uintptr_t)&HookOf_Render;
-    Note("v25 carregado: gancho OK");
+    Note("v26 carregado: gancho OK");
+
+    ForAllAtomics = (ForAllAtomics_t)aml->GetSym(h,
+        "_Z20RpClumpForAllAtomicsP7RpClumpPFP8RpAtomicS2_PvES3_");
+    ForAllMaterials = (ForAllMaterials_t)aml->GetSym(h,
+        "_Z25RpGeometryForAllMaterialsP10RpGeometryPFP10RpMaterialS2_PvES3_");
+    Note(ForAllAtomics && ForAllMaterials ? "v26: vidros OK" : "v26: vidros indisponivel");
 
     // entrada por onde o jogo prende a camera (conferida no log da v23)
     uintptr_t* slotCam = (uintptr_t*)(lib + 0x66ead8);
@@ -284,8 +353,8 @@ extern "C" void OnModLoad()
         char path[512];
         snprintf(path, sizeof(path), "%s/fpsajustes.txt", aml->GetAndroidDataPath());
         LerAjustes(path);
-        Note("v25: ajuste de camera OK");
+        Note("v26: ajuste de camera OK");
     }
-    else Note("v25: ajuste de camera NAO ativado (entrada diferente)");
-    aml->ShowToast(true, "FPS Teste v25: ativado");
+    else Note("v26: ajuste de camera NAO ativado (entrada diferente)");
+    aml->ShowToast(true, "FPS Teste v26: ativado");
 }
