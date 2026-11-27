@@ -5,9 +5,9 @@
 #include <string.h>
 #include <stdint.h>
 
-MYMODCFG(net.fpsmod.teste, FPS Teste, 18.0, VoceMesmo)
+MYMODCFG(net.fpsmod.teste, FPS Teste, 19.0, VoceMesmo)
 
-// v18: esconde cabeca e tronco do CJ SO quando ele esta em moto/bicicleta/quadri
+// v19: esconde cabeca e tronco do CJ SO quando ele esta em moto/bicicleta/quadri
 // e a camera esta perto da cabeca (primeira pessoa). Nao altera arquivos.
 static void Note(const char* msg)
 {
@@ -45,9 +45,8 @@ static int gLastModel = -1;
 static bool gLastHide = false;
 static int gLogs = 0;
 
-// destino especial: ponto abaixo dos cotovelos, fora da tela
+// destino especial: ponto atras da camera, no lado oposto aos cotovelos
 static const int BAIXO = -100;
-static const float DESCE = 0.60f;   // metros abaixo do meio dos cotovelos
 
 static void HookOf_Render(void* ped)
 {
@@ -102,8 +101,9 @@ static void HookOf_Render(void* ped)
     int le = GetIndex(hier, 23), re = GetIndex(hier, 33);
     if (le < 0 || le >= nodes || re < 0 || re >= nodes) { Render_orig(ped); return; }
     float low[3];
-    for (int k = 0; k < 3; k++) low[k] = (array[le].pos[k] + array[re].pos[k]) * 0.5f;
-    low[2] -= DESCE;
+    float* cam = (float*)(camMatrix + 0x30);
+    for (int k = 0; k < 3; k++)
+        low[k] = cam[k] - ((array[le].pos[k] + array[re].pos[k]) * 0.5f - cam[k]);
 
     // guarda tudo antes de mudar qualquer osso
     for (int i = 0; i < N; i++)
@@ -134,7 +134,7 @@ extern "C" void OnModLoad()
     logger->SetTag("FPS Teste");
     uintptr_t lib = aml->GetLib("libGTASA.so");
     void* h = aml->GetLibHandle("libGTASA.so");
-    if (!lib || !h) { Note("v18: libGTASA nao encontrada"); return; }
+    if (!lib || !h) { Note("v19: libGTASA nao encontrada"); return; }
 
     FindPlayerPed     = (FindPlayerPed_t)aml->GetSym(h, "_Z13FindPlayerPedi");
     FindPlayerVehicle = (FindPlayerVehicle_t)aml->GetSym(h, "_Z17FindPlayerVehicleib");
@@ -147,13 +147,13 @@ extern "C" void OnModLoad()
     if (!FindPlayerPed || !FindPlayerVehicle || !GetHier || !GetIndex || !Camera
         || *slot != lib + 0x4a68f5)
     {
-        Note("v18: NAO ativado (funcao ausente ou tabela diferente)");
-        aml->ShowToast(true, "FPS Teste v18: NAO ativado");
+        Note("v19: NAO ativado (funcao ausente ou tabela diferente)");
+        aml->ShowToast(true, "FPS Teste v19: NAO ativado");
         return;
     }
     Render_orig = (Render_t)*slot;
     aml->Unprot((uintptr_t)slot, sizeof(uintptr_t));
     *slot = (uintptr_t)&HookOf_Render;
-    Note("v18 carregado: gancho OK");
-    aml->ShowToast(true, "FPS Teste v18: ativado");
+    Note("v19 carregado: gancho OK");
+    aml->ShowToast(true, "FPS Teste v19: ativado");
 }
