@@ -5,9 +5,9 @@
 #include <string.h>
 #include <stdint.h>
 
-MYMODCFG(net.fpsmod.teste, FPS Teste, 19.0, VoceMesmo)
+MYMODCFG(net.fpsmod.teste, FPS Teste, 20.0, VoceMesmo)
 
-// v19: esconde cabeca e tronco do CJ SO quando ele esta em moto/bicicleta/quadri
+// v20: esconde cabeca e tronco do CJ SO quando ele esta em moto/bicicleta/quadri
 // e a camera esta perto da cabeca (primeira pessoa). Nao altera arquivos.
 static void Note(const char* msg)
 {
@@ -47,6 +47,23 @@ static int gLogs = 0;
 
 // destino especial: ponto atras da camera, no lado oposto aos cotovelos
 static const int BAIXO = -100;
+
+static const float ESTICA = 1.25f;   // 1.0 = normal
+
+// alonga o osso na direcao mao<-cotovelo, mantendo a ponta da mao parada
+static void Stretch(Matrix* m, const float* hand)
+{
+    float d[3], len2 = 0;
+    for (int k = 0; k < 3; k++) { d[k] = hand[k] - m->pos[k]; len2 += d[k] * d[k]; }
+    if (len2 < 0.0001f) return;
+    float* axes[3] = { m->right, m->up, m->at };
+    for (int a = 0; a < 3; a++)
+    {
+        float dot = axes[a][0] * d[0] + axes[a][1] * d[1] + axes[a][2] * d[2];
+        for (int k = 0; k < 3; k++) axes[a][k] += (ESTICA - 1.0f) * dot / len2 * d[k];
+    }
+    for (int k = 0; k < 3; k++) m->pos[k] = hand[k] - d[k] * ESTICA;
+}
 
 static void HookOf_Render(void* ped)
 {
@@ -100,6 +117,11 @@ static void HookOf_Render(void* ped)
     float point[N][3];
     int le = GetIndex(hier, 23), re = GetIndex(hier, 33);
     if (le < 0 || le >= nodes || re < 0 || re >= nodes) { Render_orig(ped); return; }
+    int lh = GetIndex(hier, 24), rh = GetIndex(hier, 34);
+    if (lh < 0 || lh >= nodes || rh < 0 || rh >= nodes) { Render_orig(ped); return; }
+    Matrix leftArm = array[le], rightArm = array[re];   // para devolver depois
+    Stretch(&array[le], array[lh].pos);
+    Stretch(&array[re], array[rh].pos);
     float low[3];
     float* cam = (float*)(camMatrix + 0x30);
     for (int k = 0; k < 3; k++)
@@ -127,6 +149,8 @@ static void HookOf_Render(void* ped)
     Render_orig(ped);
     for (int i = 0; i < N; i++)
         if (idx[i] >= 0) array[idx[i]] = saved[i];
+    array[le] = leftArm;
+    array[re] = rightArm;
 }
 
 extern "C" void OnModLoad()
@@ -134,7 +158,7 @@ extern "C" void OnModLoad()
     logger->SetTag("FPS Teste");
     uintptr_t lib = aml->GetLib("libGTASA.so");
     void* h = aml->GetLibHandle("libGTASA.so");
-    if (!lib || !h) { Note("v19: libGTASA nao encontrada"); return; }
+    if (!lib || !h) { Note("v20: libGTASA nao encontrada"); return; }
 
     FindPlayerPed     = (FindPlayerPed_t)aml->GetSym(h, "_Z13FindPlayerPedi");
     FindPlayerVehicle = (FindPlayerVehicle_t)aml->GetSym(h, "_Z17FindPlayerVehicleib");
@@ -147,13 +171,13 @@ extern "C" void OnModLoad()
     if (!FindPlayerPed || !FindPlayerVehicle || !GetHier || !GetIndex || !Camera
         || *slot != lib + 0x4a68f5)
     {
-        Note("v19: NAO ativado (funcao ausente ou tabela diferente)");
-        aml->ShowToast(true, "FPS Teste v19: NAO ativado");
+        Note("v20: NAO ativado (funcao ausente ou tabela diferente)");
+        aml->ShowToast(true, "FPS Teste v20: NAO ativado");
         return;
     }
     Render_orig = (Render_t)*slot;
     aml->Unprot((uintptr_t)slot, sizeof(uintptr_t));
     *slot = (uintptr_t)&HookOf_Render;
-    Note("v19 carregado: gancho OK");
-    aml->ShowToast(true, "FPS Teste v19: ativado");
+    Note("v20 carregado: gancho OK");
+    aml->ShowToast(true, "FPS Teste v20: ativado");
 }
