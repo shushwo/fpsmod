@@ -4,10 +4,12 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include <elf.h>
+#include <link.h>
 
-MYMODCFG(net.fpsmod.teste, FPS Teste, 21.0, VoceMesmo)
+MYMODCFG(net.fpsmod.teste, FPS Teste, 22.0, VoceMesmo)
 
-// v21: esconde cabeca e tronco do CJ SO quando ele esta em moto/bicicleta/quadri
+// v22: esconde cabeca e tronco do CJ SO quando ele esta em moto/bicicleta/quadri
 // e a camera esta perto da cabeca (primeira pessoa). Nao altera arquivos.
 static void Note(const char* msg)
 {
@@ -15,6 +17,100 @@ static void Note(const char* msg)
     snprintf(path, sizeof(path), "%s/fpsteste.txt", aml->GetAndroidDataPath());
     FILE* f = fopen(path, "a");
     if (f) { fprintf(f, "%s\n", msg); fclose(f); }
+}
+
+// v22: SO LE a tabela de simbolos da libGTASA para achar a funcao que prende a
+// camera ao CJ, e se da para interceptar. Nao altera nada.
+#if __SIZEOF_POINTER__ == 4
+#define REL_SYM(i) ELF32_R_SYM(i)
+#else
+#define REL_SYM(i) ELF64_R_SYM(i)
+#endif
+
+static bool Interessa(const char* n)
+{
+    if (!strcmp(n, "_ZN7CCamera7ProcessEv")) return true;
+    if (strncmp(n, "_ZN7CCamera", 11) && strncmp(n, "_ZN4CCam", 8)) return false;
+    return strstr(n, "Attach") || strstr(n, "TakeControl");
+}
+
+static void Diagnostico(uintptr_t lib)
+{
+    const ElfW(Ehdr)* eh = (const ElfW(Ehdr)*)lib;
+    if (memcmp(eh->e_ident, ELFMAG, SELFMAG)) { Note("diag: cabecalho nao encontrado"); return; }
+    const ElfW(Phdr)* ph = (const ElfW(Phdr)*)(lib + eh->e_phoff);
+    const ElfW(Dyn)* dyn = NULL;
+    for (int i = 0; i < eh->e_phnum; i++)
+        if (ph[i].p_type == PT_DYNAMIC) dyn = (const ElfW(Dyn)*)(lib + ph[i].p_vaddr);
+    if (!dyn) { Note("diag: sem secao dinamica"); return; }
+
+    uintptr_t symtab = 0, strtab = 0, hash = 0, gnu = 0;
+    uintptr_t tab[3] = { 0, 0, 0 };      // JMPREL, REL, RELA
+    size_t tam[3] = { 0, 0, 0 };
+    bool pltRela = false;
+    for (; dyn->d_tag != DT_NULL; dyn++)
+    {
+        uintptr_t v = dyn->d_un.d_ptr;
+        uintptr_t p = v < lib ? lib + v : v;
+        switch (dyn->d_tag)
+        {
+            case DT_SYMTAB:   symtab = p; break;
+            case DT_STRTAB:   strtab = p; break;
+            case DT_HASH:     hash = p; break;
+            case DT_GNU_HASH: gnu = p; break;
+            case DT_JMPREL:   tab[0] = p; break;
+            case DT_PLTRELSZ: tam[0] = v; break;
+            case DT_PLTREL:   pltRela = v == DT_RELA; break;
+            case DT_REL:      tab[1] = p; break;
+            case DT_RELSZ:    tam[1] = v; break;
+            case DT_RELA:     tab[2] = p; break;
+            case DT_RELASZ:   tam[2] = v; break;
+        }
+    }
+    if (!symtab || !strtab) { Note("diag: sem tabela de simbolos"); return; }
+
+    uint32_t nsym = 0;
+    if (hash) nsym = ((const uint32_t*)hash)[1];
+    else if (gnu)
+    {
+        const uint32_t* g = (const uint32_t*)gnu;
+        uint32_t nb = g[0], first = g[1], nbloom = g[2];
+        const uint32_t* buckets = (const uint32_t*)((const ElfW(Addr)*)(g + 4) + nbloom);
+        const uint32_t* chain = buckets + nb;
+        uint32_t last = 0;
+        for (uint32_t i = 0; i < nb; i++) if (buckets[i] > last) last = buckets[i];
+        if (last >= first) { while (!(chain[last - first] & 1)) last++; nsym = last + 1; }
+    }
+
+    const ElfW(Sym)* sym = (const ElfW(Sym)*)symtab;
+    char b[400];
+    int achados = 0;
+    for (uint32_t s = 1; s < nsym && achados < 40; s++)
+    {
+        const char* n = (const char*)strtab + sym[s].st_name;
+        if (!Interessa(n)) continue;
+        achados++;
+        snprintf(b, sizeof(b), "diag: %s = 0x%lx", n, (unsigned long)sym[s].st_value);
+        Note(b);
+        for (int t = 0; t < 3; t++)
+        {
+            if (!tab[t]) continue;
+            bool rela = t == 2 || (t == 0 && pltRela);
+            size_t passo = rela ? sizeof(ElfW(Rela)) : sizeof(ElfW(Rel));
+            for (size_t o = 0; o + passo <= tam[t]; o += passo)
+            {
+                const ElfW(Rel)* r = (const ElfW(Rel)*)(tab[t] + o);
+                if (REL_SYM(r->r_info) != s) continue;
+                uintptr_t valor = *(const uintptr_t*)(lib + r->r_offset);
+                snprintf(b, sizeof(b), "diag:    entrada %d em 0x%lx, aponta para 0x%lx%s",
+                         t, (unsigned long)r->r_offset, (unsigned long)(valor - lib),
+                         valor == lib + sym[s].st_value ? " (a propria funcao)" : "");
+                Note(b);
+            }
+        }
+    }
+    snprintf(b, sizeof(b), "diag: fim, %u simbolos, %d encontrados", nsym, achados);
+    Note(b);
 }
 
 typedef void* (*FindPlayerPed_t)(int);
@@ -134,7 +230,9 @@ extern "C" void OnModLoad()
     logger->SetTag("FPS Teste");
     uintptr_t lib = aml->GetLib("libGTASA.so");
     void* h = aml->GetLibHandle("libGTASA.so");
-    if (!lib || !h) { Note("v21: libGTASA nao encontrada"); return; }
+    if (!lib || !h) { Note("v22: libGTASA nao encontrada"); return; }
+
+    Diagnostico(lib);
 
     FindPlayerPed     = (FindPlayerPed_t)aml->GetSym(h, "_Z13FindPlayerPedi");
     FindPlayerVehicle = (FindPlayerVehicle_t)aml->GetSym(h, "_Z17FindPlayerVehicleib");
@@ -147,13 +245,13 @@ extern "C" void OnModLoad()
     if (!FindPlayerPed || !FindPlayerVehicle || !GetHier || !GetIndex || !Camera
         || *slot != lib + 0x4a68f5)
     {
-        Note("v21: NAO ativado (funcao ausente ou tabela diferente)");
-        aml->ShowToast(true, "FPS Teste v21: NAO ativado");
+        Note("v22: NAO ativado (funcao ausente ou tabela diferente)");
+        aml->ShowToast(true, "FPS Teste v22: NAO ativado");
         return;
     }
     Render_orig = (Render_t)*slot;
     aml->Unprot((uintptr_t)slot, sizeof(uintptr_t));
     *slot = (uintptr_t)&HookOf_Render;
-    Note("v21 carregado: gancho OK");
-    aml->ShowToast(true, "FPS Teste v21: ativado");
+    Note("v22 carregado: gancho OK");
+    aml->ShowToast(true, "FPS Teste v22: ativado");
 }
