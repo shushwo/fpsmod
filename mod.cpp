@@ -10,9 +10,9 @@
 #include <math.h>
 #include <time.h>
 
-MYMODCFG(net.fpsmod.teste, FPS Teste, 27.0, VoceMesmo)
+MYMODCFG(net.fpsmod.teste, FPS Teste, 28.0, VoceMesmo)
 
-// v27: com a camera perto (1a pessoa), esconde cabeca e tronco em moto/bicicleta/
+// v28: com a camera perto (1a pessoa), esconde cabeca e tronco em moto/bicicleta/
 // quadri e so a cabeca nos outros veiculos, a pe e nadando
 // e a camera esta perto da cabeca (primeira pessoa). Nao altera arquivos.
 static void Note(const char* msg)
@@ -23,7 +23,7 @@ static void Note(const char* msg)
     if (f) { fprintf(f, "%s\n", msg); fclose(f); }
 }
 
-// v27: SO LE. Descobre que funcoes do jogo o script altera quando esta a pe.
+// v28: SO LE. Descobre o nome das funcoes chamadas nos pontos que o script altera.
 // procura o caminho do arquivo da biblioteca no mapa de memoria do jogo
 static bool AcharCaminho(char* caminho, size_t tam)
 {
@@ -70,11 +70,49 @@ static void* Ler(FILE* f, size_t pos, size_t tam)
     return m;
 }
 
+// valor imediato de uma instrucao ARM (8 bits girados)
+static uint32_t ImmArm(uint32_t i)
+{
+    uint32_t v = i & 0xff, r = ((i >> 8) & 0xf) * 2;
+    return r ? (v >> r) | (v << (32 - r)) : v;
+}
+
+// se o endereco for um "atalho" para outra funcao (PLT), devolve onde esta
+// guardado o destino; senao devolve 0. a = endereco relativo, p = bytes de la
+static uintptr_t EntradaDoAtalho(uintptr_t a, const unsigned char* p)
+{
+    if (p[0] == 0x78 && p[1] == 0x47) { a += 4; p += 4; }    // bx pc ; nop
+    uint32_t i[3];
+    memcpy(i, p, sizeof(i));
+    if ((i[0] & 0xfffff000) != 0xe28fc000 || (i[1] & 0xfffff000) != 0xe28cc000
+        || (i[2] & 0xfffff000) != 0xe5bcf000) return 0;
+    return (uint32_t)(a + 8 + ImmArm(i[0]) + ImmArm(i[1]) + (i[2] & 0xfff));
+}
+
 static void Diagnostico(uintptr_t lib)
 {
-    // enderecos que o SA.FirstPerson.csi escreve (versao 2.00)
-    static const uintptr_t alvo[] = { 0x3c68e6, 0x3c68f2, 0x3f4082, 0x3f4342, 0x4379a0, 0x437a2c };
-    const int N = sizeof(alvo) / sizeof(alvo[0]);
+    // destinos calculados a partir dos bytes vistos no log da v27:
+    // chamada original em 0x3f4082, original em 0x3f4342 e a que o script poe la
+    static const uintptr_t pedido[] = { 0x198b14, 0x196a50, 0x32ae88 };
+    uintptr_t alvo[3];
+    for (int k = 0; k < 3; k++)
+    {
+        alvo[k] = pedido[k];
+        unsigned char p[16];
+        if (!Legivel(lib + pedido[k]) || !Legivel(lib + pedido[k] + 12)) continue;
+        memcpy(p, (const void*)(lib + pedido[k]), sizeof(p));
+        uintptr_t e = EntradaDoAtalho(pedido[k], p);
+        char c[200];
+        snprintf(c, sizeof(c), "diag: destino 0x%lx bytes=%02x%02x%02x%02x entrada=0x%lx",
+                 (unsigned long)pedido[k], p[0], p[1], p[2], p[3], (unsigned long)e);
+        Note(c);
+        if (e && Legivel(lib + e))
+        {
+            uintptr_t valor = *(const uintptr_t*)(lib + e);
+            alvo[k] = (valor - lib) & ~(uintptr_t)1;
+        }
+    }
+    const int N = 3;
     char caminho[512], b[700];
     if (!AcharCaminho(caminho, sizeof(caminho))) { Note("diag: caminho nao encontrado"); return; }
     FILE* f = fopen(caminho, "rb");
@@ -105,14 +143,10 @@ static void Diagnostico(uintptr_t lib)
             if ((sym[s].st_info & 0xf) != STT_FUNC || sym[s].st_name >= nstr) continue;
             if (v && v <= alvo[k] && v > inicio) { inicio = v; melhor = s; }
         }
-        unsigned char x[4] = { 0, 0, 0, 0 };
-        uintptr_t onde = lib + alvo[k];
-        if (Legivel(onde)) memcpy(x, (const void*)onde, 4);
-        snprintf(b, sizeof(b), "diag: 0x%lx bytes=%02x %02x %02x %02x em %s +0x%lx (tam 0x%lx)",
-                 (unsigned long)alvo[k], x[0], x[1], x[2], x[3],
+        snprintf(b, sizeof(b), "diag: 0x%lx vai para 0x%lx = %s +0x%lx",
+                 (unsigned long)pedido[k], (unsigned long)alvo[k],
                  melhor ? str + sym[melhor].st_name : "?",
-                 (unsigned long)(alvo[k] - inicio),
-                 (unsigned long)(melhor ? sym[melhor].st_size : 0));
+                 (unsigned long)(alvo[k] - inicio));
         Note(b);
     }
     Note("diag: fim");
@@ -353,7 +387,7 @@ extern "C" void OnModLoad()
     logger->SetTag("FPS Teste");
     uintptr_t lib = aml->GetLib("libGTASA.so");
     void* h = aml->GetLibHandle("libGTASA.so");
-    if (!lib || !h) { Note("v27: libGTASA nao encontrada"); return; }
+    if (!lib || !h) { Note("v28: libGTASA nao encontrada"); return; }
 
     Diagnostico(lib);
 
@@ -368,14 +402,14 @@ extern "C" void OnModLoad()
     if (!FindPlayerPed || !FindPlayerVehicle || !GetHier || !GetIndex || !Camera
         || *slot != lib + 0x4a68f5)
     {
-        Note("v27: NAO ativado (funcao ausente ou tabela diferente)");
-        aml->ShowToast(true, "FPS Teste v27: NAO ativado");
+        Note("v28: NAO ativado (funcao ausente ou tabela diferente)");
+        aml->ShowToast(true, "FPS Teste v28: NAO ativado");
         return;
     }
     Render_orig = (Render_t)*slot;
     aml->Unprot((uintptr_t)slot, sizeof(uintptr_t));
     *slot = (uintptr_t)&HookOf_Render;
-    Note("v27 carregado: gancho OK");
+    Note("v28 carregado: gancho OK");
 
     // entrada por onde o jogo prende a camera (conferida no log da v23)
     uintptr_t* slotCam = (uintptr_t*)(lib + 0x66ead8);
@@ -387,8 +421,8 @@ extern "C" void OnModLoad()
         char path[512];
         snprintf(path, sizeof(path), "%s/fpsajustes.txt", aml->GetAndroidDataPath());
         LerAjustes(path);
-        Note("v27: ajuste de camera OK");
+        Note("v28: ajuste de camera OK");
     }
-    else Note("v27: ajuste de camera NAO ativado (entrada diferente)");
-    aml->ShowToast(true, "FPS Teste v27: ativado");
+    else Note("v28: ajuste de camera NAO ativado (entrada diferente)");
+    aml->ShowToast(true, "FPS Teste v28: ativado");
 }
