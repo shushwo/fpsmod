@@ -7,9 +7,10 @@
 #include <math.h>
 #include <time.h>
 
-MYMODCFG(net.fpsmod.teste, FPS Teste, 24.0, VoceMesmo)
+MYMODCFG(net.fpsmod.teste, FPS Teste, 25.0, VoceMesmo)
 
-// v24: esconde cabeca e tronco do CJ SO quando ele esta em moto/bicicleta/quadri
+// v25: com a camera perto (1a pessoa), esconde cabeca e tronco em moto/bicicleta/
+// quadri e so a cabeca nos outros veiculos
 // e a camera esta perto da cabeca (primeira pessoa). Nao altera arquivos.
 static void Note(const char* msg)
 {
@@ -141,7 +142,8 @@ static void HookOf_Render(void* ped)
         float dy = array[head].pos[1] - c[1];
         float dz = array[head].pos[2] - c[2];
         dist2 = dx * dx + dy * dy + dz * dz;
-        hide = IsBikeModel(model) && dist2 < 1.2f * 1.2f;
+        // qualquer veiculo: so esconde com a camera perto (primeira pessoa)
+        hide = veh && dist2 < 1.2f * 1.2f;
     }
 
     if ((model != gLastModel || hide != gLastHide) && gLogs < 200)
@@ -176,8 +178,11 @@ static void HookOf_Render(void* ped)
         low[k] = cam[k] - ((array[le].pos[k] + array[re].pos[k]) * 0.5f - cam[k]);
 
     // guarda tudo antes de mudar qualquer osso
+    // moto/bicicleta: lista inteira. Outros veiculos: so os 4 primeiros (cabeca)
+    const int usar = IsBikeModel(model) ? N : 4;
     for (int i = 0; i < N; i++)
     {
+        if (i >= usar) { idx[i] = -1; continue; }
         idx[i] = GetIndex(hier, shrink[i][0]);
         bool isLow = shrink[i][1] == BAIXO;
         int to = isLow ? 0 : GetIndex(hier, shrink[i][1]);
@@ -247,7 +252,7 @@ extern "C" void OnModLoad()
     logger->SetTag("FPS Teste");
     uintptr_t lib = aml->GetLib("libGTASA.so");
     void* h = aml->GetLibHandle("libGTASA.so");
-    if (!lib || !h) { Note("v24: libGTASA nao encontrada"); return; }
+    if (!lib || !h) { Note("v25: libGTASA nao encontrada"); return; }
 
     FindPlayerPed     = (FindPlayerPed_t)aml->GetSym(h, "_Z13FindPlayerPedi");
     FindPlayerVehicle = (FindPlayerVehicle_t)aml->GetSym(h, "_Z17FindPlayerVehicleib");
@@ -260,14 +265,14 @@ extern "C" void OnModLoad()
     if (!FindPlayerPed || !FindPlayerVehicle || !GetHier || !GetIndex || !Camera
         || *slot != lib + 0x4a68f5)
     {
-        Note("v24: NAO ativado (funcao ausente ou tabela diferente)");
-        aml->ShowToast(true, "FPS Teste v24: NAO ativado");
+        Note("v25: NAO ativado (funcao ausente ou tabela diferente)");
+        aml->ShowToast(true, "FPS Teste v25: NAO ativado");
         return;
     }
     Render_orig = (Render_t)*slot;
     aml->Unprot((uintptr_t)slot, sizeof(uintptr_t));
     *slot = (uintptr_t)&HookOf_Render;
-    Note("v24 carregado: gancho OK");
+    Note("v25 carregado: gancho OK");
 
     // entrada por onde o jogo prende a camera (conferida no log da v23)
     uintptr_t* slotCam = (uintptr_t*)(lib + 0x66ead8);
@@ -279,8 +284,8 @@ extern "C" void OnModLoad()
         char path[512];
         snprintf(path, sizeof(path), "%s/fpsajustes.txt", aml->GetAndroidDataPath());
         LerAjustes(path);
-        Note("v24: ajuste de camera OK");
+        Note("v25: ajuste de camera OK");
     }
-    else Note("v24: ajuste de camera NAO ativado (entrada diferente)");
-    aml->ShowToast(true, "FPS Teste v24: ativado");
+    else Note("v25: ajuste de camera NAO ativado (entrada diferente)");
+    aml->ShowToast(true, "FPS Teste v25: ativado");
 }
