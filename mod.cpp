@@ -4,13 +4,16 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdlib.h>
+#include <elf.h>
+#include <link.h>
 #include <math.h>
 #include <time.h>
 
-MYMODCFG(net.fpsmod.teste, FPS Teste, 26.0, VoceMesmo)
+MYMODCFG(net.fpsmod.teste, FPS Teste, 27.0, VoceMesmo)
 
-// v26: com a camera perto (1a pessoa), esconde cabeca e tronco em moto/bicicleta/
-// quadri e so a cabeca nos outros veiculos
+// v27: com a camera perto (1a pessoa), esconde cabeca e tronco em moto/bicicleta/
+// quadri e so a cabeca nos outros veiculos, a pe e nadando
 // e a camera esta perto da cabeca (primeira pessoa). Nao altera arquivos.
 static void Note(const char* msg)
 {
@@ -18,6 +21,102 @@ static void Note(const char* msg)
     snprintf(path, sizeof(path), "%s/fpsteste.txt", aml->GetAndroidDataPath());
     FILE* f = fopen(path, "a");
     if (f) { fprintf(f, "%s\n", msg); fclose(f); }
+}
+
+// v27: SO LE. Descobre que funcoes do jogo o script altera quando esta a pe.
+// procura o caminho do arquivo da biblioteca no mapa de memoria do jogo
+static bool AcharCaminho(char* caminho, size_t tam)
+{
+    FILE* f = fopen("/proc/self/maps", "r");
+    if (!f) return false;
+    char linha[600];
+    bool ok = false;
+    while (!ok && fgets(linha, sizeof(linha), f))
+    {
+        char* p = strchr(linha, '/');
+        if (!p || !strstr(p, "libGTASA")) continue;
+        p[strcspn(p, "\n")] = 0;
+        snprintf(caminho, tam, "%s", p);
+        ok = true;
+    }
+    fclose(f);
+    return ok;
+}
+
+// so deixa ler a memoria se o endereco estiver numa area legivel
+static bool Legivel(uintptr_t a)
+{
+    FILE* f = fopen("/proc/self/maps", "r");
+    if (!f) return false;
+    char linha[600];
+    bool ok = false;
+    while (!ok && fgets(linha, sizeof(linha), f))
+    {
+        unsigned long ini, fim; char perm[8];
+        if (sscanf(linha, "%lx-%lx %7s", &ini, &fim, perm) == 3)
+            ok = a >= ini && a + sizeof(uintptr_t) <= fim && perm[0] == 'r';
+    }
+    fclose(f);
+    return ok;
+}
+
+static void* Ler(FILE* f, size_t pos, size_t tam)
+{
+    if (!tam || tam > 32u * 1024 * 1024) return NULL;
+    char* m = (char*)malloc(tam + 1);
+    if (!m) return NULL;
+    if (fseek(f, (long)pos, SEEK_SET) || fread(m, 1, tam, f) != tam) { free(m); return NULL; }
+    m[tam] = 0;
+    return m;
+}
+
+static void Diagnostico(uintptr_t lib)
+{
+    // enderecos que o SA.FirstPerson.csi escreve (versao 2.00)
+    static const uintptr_t alvo[] = { 0x3c68e6, 0x3c68f2, 0x3f4082, 0x3f4342, 0x4379a0, 0x437a2c };
+    const int N = sizeof(alvo) / sizeof(alvo[0]);
+    char caminho[512], b[700];
+    if (!AcharCaminho(caminho, sizeof(caminho))) { Note("diag: caminho nao encontrado"); return; }
+    FILE* f = fopen(caminho, "rb");
+    if (!f) { Note("diag: nao consegui abrir o arquivo"); return; }
+    ElfW(Ehdr) eh;
+    if (fread(&eh, 1, sizeof(eh), f) != sizeof(eh) || memcmp(eh.e_ident, ELFMAG, SELFMAG)
+        || eh.e_shentsize != sizeof(ElfW(Shdr)))
+    { Note("diag: cabecalho inesperado"); fclose(f); return; }
+    ElfW(Shdr)* sh = (ElfW(Shdr)*)Ler(f, eh.e_shoff, (size_t)eh.e_shnum * sizeof(ElfW(Shdr)));
+    if (!sh) { Note("diag: sem tabela de secoes"); fclose(f); return; }
+    int ds = -1;
+    for (int i = 0; i < eh.e_shnum; i++)
+        if (sh[i].sh_type == SHT_DYNSYM) ds = i;
+    if (ds < 0 || sh[ds].sh_link >= eh.e_shnum)
+    { Note("diag: sem tabela de simbolos"); free(sh); fclose(f); return; }
+    ElfW(Sym)* sym = (ElfW(Sym)*)Ler(f, sh[ds].sh_offset, sh[ds].sh_size);
+    char* str = (char*)Ler(f, sh[sh[ds].sh_link].sh_offset, sh[sh[ds].sh_link].sh_size);
+    size_t nsym = sym ? sh[ds].sh_size / sizeof(ElfW(Sym)) : 0;
+    size_t nstr = str ? sh[sh[ds].sh_link].sh_size : 0;
+
+    for (int k = 0; k < N; k++)
+    {
+        size_t melhor = 0;
+        uintptr_t inicio = 0;
+        for (size_t s = 1; s < nsym; s++)
+        {
+            uintptr_t v = sym[s].st_value & ~(uintptr_t)1;
+            if ((sym[s].st_info & 0xf) != STT_FUNC || sym[s].st_name >= nstr) continue;
+            if (v && v <= alvo[k] && v > inicio) { inicio = v; melhor = s; }
+        }
+        unsigned char x[4] = { 0, 0, 0, 0 };
+        uintptr_t onde = lib + alvo[k];
+        if (Legivel(onde)) memcpy(x, (const void*)onde, 4);
+        snprintf(b, sizeof(b), "diag: 0x%lx bytes=%02x %02x %02x %02x em %s +0x%lx (tam 0x%lx)",
+                 (unsigned long)alvo[k], x[0], x[1], x[2], x[3],
+                 melhor ? str + sym[melhor].st_name : "?",
+                 (unsigned long)(alvo[k] - inicio),
+                 (unsigned long)(melhor ? sym[melhor].st_size : 0));
+        Note(b);
+    }
+    Note("diag: fim");
+    free(sym); free(str); free(sh); fclose(f);
 }
 
 typedef void* (*FindPlayerPed_t)(int);
@@ -38,7 +137,6 @@ struct Vec3 { float x, y, z; };
 struct Ajuste { int modelo; float frente, altura, inclina; };
 static Ajuste gAjustes[64];
 static int gNumAjustes = 0;
-static int gVidro = 0;      // 0 = nao mexe nos vidros
 
 static const char* PADRAO =
     "# Ajuste da camera em primeira pessoa, um veiculo por linha:\n"
@@ -47,8 +145,6 @@ static const char* PADRAO =
     "# altura: metros (positivo = mais alta, negativo = mais baixa)\n"
     "# inclinacao: graus (positivo = olha mais para baixo)\n"
     "# Salve o arquivo e volte ao jogo: vale em ate 2 segundos.\n"
-    "# vidro N: transparencia dos vidros (menor = mais claro; 0 = nao mexe)\n"
-    "vidro 0\n"
     "# BMX\n"
     "481  0.00  -0.05  8\n"
     "# Bike\n"
@@ -74,17 +170,10 @@ static void LerAjustes(const char* caminho)
     }
     char linha[200];
     int n = 0;
-    gVidro = 0;
     while (n < 64 && fgets(linha, sizeof(linha), f))
     {
         for (char* p = linha; *p; p++)
             if (*p == ',') *p = '.';      // aceita 0,10 e 0.10
-        int vidro;
-        if (sscanf(linha, " vidro %d", &vidro) == 1)
-        {
-            gVidro = vidro < 0 ? 0 : vidro > 250 ? 250 : vidro;
-            continue;
-        }
         Ajuste a = { 0, 0, 0, 0 };
         if (sscanf(linha, "%d %f %f %f", &a.modelo, &a.frente, &a.altura, &a.inclina) < 2
             || a.modelo <= 0) continue;
@@ -137,7 +226,7 @@ static void HookOf_Render(void* ped)
     int model = veh ? *(uint16_t*)((char*)veh + 0x26) : 0;
 
     void* clump = *(void**)((char*)ped + 0x18);
-    void* hier = (veh && clump) ? GetHier(clump) : NULL;
+    void* hier = clump ? GetHier(clump) : NULL;
     Matrix* array = hier ? *(Matrix**)((char*)hier + 8) : NULL;
     int nodes = hier ? *(int*)((char*)hier + 4) : 0;
     int head = array ? GetIndex(hier, 5) : -1;
@@ -152,8 +241,10 @@ static void HookOf_Render(void* ped)
         float dy = array[head].pos[1] - c[1];
         float dz = array[head].pos[2] - c[2];
         dist2 = dx * dx + dy * dy + dz * dz;
-        // qualquer veiculo: so esconde com a camera perto (primeira pessoa)
-        hide = veh && dist2 < 1.2f * 1.2f;
+        // so esconde com a camera perto (primeira pessoa). A pe e nadando o
+        // limite e menor, para nao afetar a camera de terceira pessoa
+        const float limite = veh ? 1.2f : 0.6f;
+        hide = dist2 < limite * limite;
     }
 
     if ((model != gLastModel || hide != gLastHide) && gLogs < 200)
@@ -214,57 +305,6 @@ static void HookOf_Render(void* ped)
         if (idx[i] >= 0) array[idx[i]] = saved[i];
 }
 
-// ---- vidros mais claros (linha "vidro N" no fpsajustes.txt) ----
-// Muda so a transparencia, na memoria, dos materiais que ja sao transparentes
-// no veiculo em que o CJ esta. Nao remove o vidro nem altera arquivos.
-typedef void* (*ForAllAtomics_t)(void*, void* (*)(void*, void*), void*);
-typedef void* (*ForAllMaterials_t)(void*, void* (*)(void*, void*), void*);
-static ForAllAtomics_t   ForAllAtomics;
-static ForAllMaterials_t ForAllMaterials;
-
-struct Vidro { int valor; int achados; int pecas; char alfas[120]; };
-static unsigned char gModeloVisto[32];   // um bit por modelo ja anotado
-
-static void* CadaMaterial(void* material, void* dados)
-{
-    Vidro* v = (Vidro*)dados;
-    unsigned char* alfa = (unsigned char*)material + 7;   // RpMaterial.color.alpha
-    if (*alfa == 0 || *alfa == 255) return material;      // so o que e translucido
-    size_t n = strlen(v->alfas);
-    if (v->achados < 20) snprintf(v->alfas + n, sizeof(v->alfas) - n, " %d", *alfa);
-    v->achados++;
-    if (v->valor > 0) *alfa = (unsigned char)v->valor;
-    return material;
-}
-
-static void* CadaPeca(void* atomic, void* dados)
-{
-    void* geometria = *(void**)((char*)atomic + 0x18);
-    // confere se e mesmo uma geometria (tipo 8) antes de mexer
-    if (!geometria || *(unsigned char*)geometria != 8) return atomic;
-    ((Vidro*)dados)->pecas++;
-    ForAllMaterials(geometria, CadaMaterial, dados);
-    return atomic;
-}
-
-static void ClarearVidros(void* veiculo, int modelo, int valor)
-{
-    if (valor <= 0 || !ForAllAtomics || !ForAllMaterials) return;
-    void* clump = *(void**)((char*)veiculo + 0x18);
-    if (!clump || *(unsigned char*)clump != 2) return;    // 2 = clump
-    Vidro v = { valor, 0, 0, "" };
-    ForAllAtomics(clump, CadaPeca, &v);
-    int i = modelo - 400;
-    if (i >= 0 && i < 256 && !(gModeloVisto[i / 8] & (1 << (i % 8))))
-    {
-        gModeloVisto[i / 8] |= 1 << (i % 8);
-        char b[220];
-        snprintf(b, sizeof(b), "vidro modelo=%d pecas=%d translucidos=%d valores:%s",
-                 modelo, v.pecas, v.achados, v.alfas);
-        Note(b);
-    }
-}
-
 typedef void (*Attach_t)(void*, void*, void*, Vec3*, Vec3*, float, short, int);
 static Attach_t Attach_orig;
 static int gUltimoCam = -1;
@@ -293,8 +333,6 @@ static void HookOf_Attach(void* cam, void* alvo, void* preso, Vec3* pos, Vec3* o
         gUltimaLeitura = agora;
     }
 
-    ClarearVidros(veh, modelo, gVidro);
-
     Vec3 p = *pos, o = *olhar;       // copias: nao mexe nos valores do jogo
     bool mudou = Ajustar(modelo, &p, &o);
 
@@ -315,7 +353,9 @@ extern "C" void OnModLoad()
     logger->SetTag("FPS Teste");
     uintptr_t lib = aml->GetLib("libGTASA.so");
     void* h = aml->GetLibHandle("libGTASA.so");
-    if (!lib || !h) { Note("v26: libGTASA nao encontrada"); return; }
+    if (!lib || !h) { Note("v27: libGTASA nao encontrada"); return; }
+
+    Diagnostico(lib);
 
     FindPlayerPed     = (FindPlayerPed_t)aml->GetSym(h, "_Z13FindPlayerPedi");
     FindPlayerVehicle = (FindPlayerVehicle_t)aml->GetSym(h, "_Z17FindPlayerVehicleib");
@@ -328,20 +368,14 @@ extern "C" void OnModLoad()
     if (!FindPlayerPed || !FindPlayerVehicle || !GetHier || !GetIndex || !Camera
         || *slot != lib + 0x4a68f5)
     {
-        Note("v26: NAO ativado (funcao ausente ou tabela diferente)");
-        aml->ShowToast(true, "FPS Teste v26: NAO ativado");
+        Note("v27: NAO ativado (funcao ausente ou tabela diferente)");
+        aml->ShowToast(true, "FPS Teste v27: NAO ativado");
         return;
     }
     Render_orig = (Render_t)*slot;
     aml->Unprot((uintptr_t)slot, sizeof(uintptr_t));
     *slot = (uintptr_t)&HookOf_Render;
-    Note("v26 carregado: gancho OK");
-
-    ForAllAtomics = (ForAllAtomics_t)aml->GetSym(h,
-        "_Z20RpClumpForAllAtomicsP7RpClumpPFP8RpAtomicS2_PvES3_");
-    ForAllMaterials = (ForAllMaterials_t)aml->GetSym(h,
-        "_Z25RpGeometryForAllMaterialsP10RpGeometryPFP10RpMaterialS2_PvES3_");
-    Note(ForAllAtomics && ForAllMaterials ? "v26: vidros OK" : "v26: vidros indisponivel");
+    Note("v27 carregado: gancho OK");
 
     // entrada por onde o jogo prende a camera (conferida no log da v23)
     uintptr_t* slotCam = (uintptr_t*)(lib + 0x66ead8);
@@ -353,8 +387,8 @@ extern "C" void OnModLoad()
         char path[512];
         snprintf(path, sizeof(path), "%s/fpsajustes.txt", aml->GetAndroidDataPath());
         LerAjustes(path);
-        Note("v26: ajuste de camera OK");
+        Note("v27: ajuste de camera OK");
     }
-    else Note("v26: ajuste de camera NAO ativado (entrada diferente)");
-    aml->ShowToast(true, "FPS Teste v26: ativado");
+    else Note("v27: ajuste de camera NAO ativado (entrada diferente)");
+    aml->ShowToast(true, "FPS Teste v27: ativado");
 }
