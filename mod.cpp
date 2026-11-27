@@ -7,9 +7,9 @@
 #include <math.h>
 #include <time.h>
 
-MYMODCFG(net.fpsmod.teste, FPS Teste, 30.0, VoceMesmo)
+MYMODCFG(net.fpsmod.teste, FPS Teste, 31.0, VoceMesmo)
 
-// v30: com a camera perto (1a pessoa), esconde cabeca e tronco em moto/bicicleta/
+// v31: com a camera perto (1a pessoa), esconde cabeca e tronco em moto/bicicleta/
 // quadri e so a cabeca nos outros veiculos, a pe e nadando
 // e a camera esta perto da cabeca (primeira pessoa). Nao altera arquivos.
 static void Note(const char* msg)
@@ -40,7 +40,7 @@ static Ajuste gAjustes[64];
 static int gNumAjustes = 0;
 // a pe: quanto a camera fica a frente do corpo (metros): base, extra se gordo,
 // extra se musculoso. Linha "ape B G M" no fpsajustes.txt
-static float gApe[3] = { 0.12f, 0.15f, 0.06f };
+static float gApe[3] = { 0.05f, 0.06f, 0.02f };
 
 static const char* PADRAO =
     "# Ajuste da camera em primeira pessoa, um veiculo por linha:\n"
@@ -50,7 +50,7 @@ static const char* PADRAO =
     "# inclinacao: graus (positivo = olha mais para baixo)\n"
     "# Salve o arquivo e volte ao jogo: vale em ate 2 segundos.\n"
     "# A pe: base, extra se gordo, extra se musculoso (metros)\n"
-    "ape 0.12 0.15 0.06\n"
+    "ape 0.05 0.06 0.02\n"
     "# BMX\n"
     "481  0.00  -0.05  8\n"
     "# Bike\n"
@@ -76,7 +76,7 @@ static void LerAjustes(const char* caminho)
     }
     char linha[200];
     int n = 0;
-    gApe[0] = 0.12f; gApe[1] = 0.15f; gApe[2] = 0.06f;
+    gApe[0] = 0.05f; gApe[1] = 0.06f; gApe[2] = 0.02f;
     while (n < 64 && fgets(linha, sizeof(linha), f))
     {
         for (char* p = linha; *p; p++)
@@ -155,7 +155,7 @@ static float Fracao(unsigned short qual)
 }
 
 // empurra o corpo desenhado para tras (o mesmo que adiantar a camera)
-static void AfastarCorpo(void* ped, Matrix* array, int nodes)
+static void AfastarCorpo(void* ped, void* hier, Matrix* array, int nodes, const char* camMatrix)
 {
     RecarregarAjustes();
     float gordo = Fracao(21), musculo = Fracao(23);
@@ -166,10 +166,27 @@ static void AfastarCorpo(void* ped, Matrix* array, int nodes)
     float x = frente[0], y = frente[1];
     float len = sqrtf(x * x + y * y);
     if (!(len > 0.3f && len < 1.1f)) return;      // so a direcao no chao
+    // so afasta quando a camera olha para baixo: nada olhando para a frente,
+    // aumentando aos poucos ate o valor cheio
+    float baixo = -((const float*)(camMatrix + 0x10))[2];
+    float quanto = (baixo - 0.30f) / 0.50f;
+    quanto = quanto > 0 ? (quanto < 1 ? quanto : 1) : 0;
+
+    // antebracos, maos e dedos ficam no lugar (a arma e desenhada a parte);
+    // o braco de cima vai so pela metade, para nao esticar de repente
+    float peso[100];
+    for (int i = 0; i < nodes; i++) peso[i] = 1.0f;
+    static const int parado[][2] = { {22,50}, {23,0}, {24,0}, {25,0}, {26,0},
+                                     {32,50}, {33,0}, {34,0}, {35,0}, {36,0} };
+    for (unsigned k = 0; k < sizeof(parado) / sizeof(parado[0]); k++)
+    {
+        int i = GetIndex(hier, parado[k][0]);
+        if (i >= 0 && i < nodes) peso[i] = parado[k][1] / 100.0f;
+    }
     for (int i = 0; i < nodes; i++)
     {
-        array[i].pos[0] -= x / len * recuo;
-        array[i].pos[1] -= y / len * recuo;
+        array[i].pos[0] -= x / len * recuo * quanto * peso[i];
+        array[i].pos[1] -= y / len * recuo * quanto * peso[i];
     }
     if (gLogsApe < 20 && fabsf(recuo - gUltimoRecuo) > 0.005f)
     {
@@ -282,7 +299,7 @@ static void HookOf_Render(void* ped)
     if (afastar)
     {
         memcpy(inteiro, array, nodes * sizeof(Matrix));
-        AfastarCorpo(ped, array, nodes);
+        AfastarCorpo(ped, hier, array, nodes, camMatrix);
     }
     Render_orig(ped);
     if (afastar) memcpy(array, inteiro, nodes * sizeof(Matrix));
@@ -330,7 +347,7 @@ extern "C" void OnModLoad()
     logger->SetTag("FPS Teste");
     uintptr_t lib = aml->GetLib("libGTASA.so");
     void* h = aml->GetLibHandle("libGTASA.so");
-    if (!lib || !h) { Note("v30: libGTASA nao encontrada"); return; }
+    if (!lib || !h) { Note("v31: libGTASA nao encontrada"); return; }
 
     FindPlayerPed     = (FindPlayerPed_t)aml->GetSym(h, "_Z13FindPlayerPedi");
     FindPlayerVehicle = (FindPlayerVehicle_t)aml->GetSym(h, "_Z17FindPlayerVehicleib");
@@ -343,18 +360,18 @@ extern "C" void OnModLoad()
     if (!FindPlayerPed || !FindPlayerVehicle || !GetHier || !GetIndex || !Camera
         || *slot != lib + 0x4a68f5)
     {
-        Note("v30: NAO ativado (funcao ausente ou tabela diferente)");
-        aml->ShowToast(true, "FPS Teste v30: NAO ativado");
+        Note("v31: NAO ativado (funcao ausente ou tabela diferente)");
+        aml->ShowToast(true, "FPS Teste v31: NAO ativado");
         return;
     }
     Render_orig = (Render_t)*slot;
     aml->Unprot((uintptr_t)slot, sizeof(uintptr_t));
     *slot = (uintptr_t)&HookOf_Render;
-    Note("v30 carregado: gancho OK");
+    Note("v31 carregado: gancho OK");
 
     GetStat = (GetStat_t)aml->GetSym(h, "_ZN6CStats12GetStatValueEt");
     if (!GetStat) GetStat = (GetStat_t)aml->GetSym(h, "_ZN6CStats12GetStatValueE6eStats");
-    Note(GetStat ? "v30: gordura e musculo OK" : "v30: gordura e musculo indisponiveis");
+    Note(GetStat ? "v31: gordura e musculo OK" : "v31: gordura e musculo indisponiveis");
 
     // entrada por onde o jogo prende a camera (conferida no log da v23)
     uintptr_t* slotCam = (uintptr_t*)(lib + 0x66ead8);
@@ -366,8 +383,8 @@ extern "C" void OnModLoad()
         char path[512];
         snprintf(path, sizeof(path), "%s/fpsajustes.txt", aml->GetAndroidDataPath());
         LerAjustes(path);
-        Note("v30: ajuste de camera OK");
+        Note("v31: ajuste de camera OK");
     }
-    else Note("v30: ajuste de camera NAO ativado (entrada diferente)");
-    aml->ShowToast(true, "FPS Teste v30: ativado");
+    else Note("v31: ajuste de camera NAO ativado (entrada diferente)");
+    aml->ShowToast(true, "FPS Teste v31: ativado");
 }
