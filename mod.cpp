@@ -7,9 +7,9 @@
 #include <math.h>
 #include <time.h>
 
-MYMODCFG(net.fpsmod.teste, FPS Teste, 33.0, VoceMesmo)
+MYMODCFG(net.fpsmod.teste, FPS Teste, 34.0, VoceMesmo)
 
-// v33: com a camera perto (1a pessoa), esconde cabeca e tronco em moto/bicicleta/
+// v34: com a camera perto (1a pessoa), esconde cabeca e tronco em moto/bicicleta/
 // quadri e so a cabeca nos outros veiculos, a pe e nadando
 // e a camera esta perto da cabeca (primeira pessoa). Nao altera arquivos.
 static void Note(const char* msg)
@@ -370,6 +370,27 @@ static bool Inclinar(const float* frente, float* cima, const float* veiculo, flo
     return true;
 }
 
+static void Linha(const char* nome, int onde, const float* v, int n)
+{
+    char b[220];
+    int p = snprintf(b, sizeof(b), "foto %s 0x%x:", nome, onde);
+    for (int i = 0; i < n && p < (int)sizeof(b); i++)
+        p += snprintf(b + p, sizeof(b) - p, " %.3f", v[i]);
+    Note(b);
+}
+
+static void FotoCamera(void* cam, const char* mveh, const char* nome)
+{
+    for (int o = 0x160; o < 0x230; o += 16)
+        Linha(nome, o, (const float*)((char*)cam + o), 4);
+    const char* mcam = *(char**)(Camera + 0x14);
+    for (int k = 0; k < 3; k++)      // 0=direita 1=frente 2=cima
+    {
+        Linha("veiculo", k, (const float*)(mveh + 0x10 * k), 3);
+        if (mcam) Linha("telacamera", k, (const float*)(mcam + 0x10 * k), 3);
+    }
+}
+
 static void HookOf_CamProc(void* cam)
 {
     CamProc_orig(cam);
@@ -381,25 +402,12 @@ static void HookOf_CamProc(void* cam)
     const float* acima = (const float*)(m + 0x20);
     float* frente = (float*)((char*)cam + CAM_FRENTE);
     float* cima = (float*)((char*)cam + CAM_CIMA);
-    static bool anotado = false;
     bool ok = CaraDeCamera(frente, cima) && Unitario(acima);
-    if (!anotado)
-    {
-        anotado = true;
-        char b[220];
-        snprintf(b, sizeof(b), "inclinar: %s frente=%.2f %.2f %.2f cima=%.2f %.2f %.2f",
-                 ok ? "OK" : "valores nao conferem",
-                 frente[0], frente[1], frente[2], cima[0], cima[1], cima[2]);
-        Note(b);
-        // se nao conferir, anota onde ha vetores de tamanho 1 para corrigir depois
-        for (int o = 0x100; !ok && o <= 0x220; o += 4)
-        {
-            const float* v = (const float*)((char*)cam + o);
-            if (!Unitario(v)) continue;
-            snprintf(b, sizeof(b), "inclinar:  em 0x%x: %.2f %.2f %.2f", o, v[0], v[1], v[2]);
-            Note(b);
-        }
-    }
+    // v34: SO ANOTA a memoria da camera, uma vez reto e uma vez inclinado,
+    // para descobrir onde fica o "lado de cima"
+    static int fotos = 0;
+    if (fotos == 0 && acima[2] > 0.95f) { FotoCamera(cam, m, "reto"); fotos = 1; }
+    else if (fotos == 1 && acima[2] < 0.6f) { FotoCamera(cam, m, "inclinado"); fotos = 2; }
     if (ok) Inclinar(frente, cima, acima, gInclinar);
 }
 
@@ -444,7 +452,7 @@ extern "C" void OnModLoad()
     logger->SetTag("FPS Teste");
     uintptr_t lib = aml->GetLib("libGTASA.so");
     void* h = aml->GetLibHandle("libGTASA.so");
-    if (!lib || !h) { Note("v33: libGTASA nao encontrada"); return; }
+    if (!lib || !h) { Note("v34: libGTASA nao encontrada"); return; }
 
     FindPlayerPed     = (FindPlayerPed_t)aml->GetSym(h, "_Z13FindPlayerPedi");
     FindPlayerVehicle = (FindPlayerVehicle_t)aml->GetSym(h, "_Z17FindPlayerVehicleib");
@@ -457,18 +465,18 @@ extern "C" void OnModLoad()
     if (!FindPlayerPed || !FindPlayerVehicle || !GetHier || !GetIndex || !Camera
         || *slot != lib + 0x4a68f5)
     {
-        Note("v33: NAO ativado (funcao ausente ou tabela diferente)");
-        aml->ShowToast(true, "FPS Teste v33: NAO ativado");
+        Note("v34: NAO ativado (funcao ausente ou tabela diferente)");
+        aml->ShowToast(true, "FPS Teste v34: NAO ativado");
         return;
     }
     Render_orig = (Render_t)*slot;
     aml->Unprot((uintptr_t)slot, sizeof(uintptr_t));
     *slot = (uintptr_t)&HookOf_Render;
-    Note("v33 carregado: gancho OK");
+    Note("v34 carregado: gancho OK");
 
     GetStat = (GetStat_t)aml->GetSym(h, "_ZN6CStats12GetStatValueEt");
     if (!GetStat) GetStat = (GetStat_t)aml->GetSym(h, "_ZN6CStats12GetStatValueE6eStats");
-    Note(GetStat ? "v33: gordura e musculo OK" : "v33: gordura e musculo indisponiveis");
+    Note(GetStat ? "v34: gordura e musculo OK" : "v34: gordura e musculo indisponiveis");
 
     uintptr_t* slotProc = (uintptr_t*)(lib + 0x675614);
     if (*slotProc == lib + 0x3cd4d5)
@@ -476,9 +484,9 @@ extern "C" void OnModLoad()
         CamProc_orig = (CamProc_t)*slotProc;
         aml->Unprot((uintptr_t)slotProc, sizeof(uintptr_t));
         *slotProc = (uintptr_t)&HookOf_CamProc;
-        Note("v33: inclinacao do helicoptero OK");
+        Note("v34: inclinacao do helicoptero OK");
     }
-    else Note("v33: inclinacao NAO ativada (entrada diferente)");
+    else Note("v34: inclinacao NAO ativada (entrada diferente)");
 
     // entrada por onde o jogo prende a camera (conferida no log da v23)
     uintptr_t* slotCam = (uintptr_t*)(lib + 0x66ead8);
@@ -490,8 +498,8 @@ extern "C" void OnModLoad()
         char path[512];
         snprintf(path, sizeof(path), "%s/fpsajustes.txt", aml->GetAndroidDataPath());
         LerAjustes(path);
-        Note("v33: ajuste de camera OK");
+        Note("v34: ajuste de camera OK");
     }
-    else Note("v33: ajuste de camera NAO ativado (entrada diferente)");
-    aml->ShowToast(true, "FPS Teste v33: ativado");
+    else Note("v34: ajuste de camera NAO ativado (entrada diferente)");
+    aml->ShowToast(true, "FPS Teste v34: ativado");
 }
