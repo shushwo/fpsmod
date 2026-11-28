@@ -7,9 +7,9 @@
 #include <math.h>
 #include <time.h>
 
-MYMODCFG(net.fpsmod.teste, FPS Teste, 32.0, VoceMesmo)
+MYMODCFG(net.fpsmod.teste, FPS Teste, 33.0, VoceMesmo)
 
-// v32: com a camera perto (1a pessoa), esconde cabeca e tronco em moto/bicicleta/
+// v33: com a camera perto (1a pessoa), esconde cabeca e tronco em moto/bicicleta/
 // quadri e so a cabeca nos outros veiculos, a pe e nadando
 // e a camera esta perto da cabeca (primeira pessoa). Nao altera arquivos.
 static void Note(const char* msg)
@@ -38,9 +38,9 @@ struct Vec3 { float x, y, z; };
 struct Ajuste { int modelo; float frente, altura, inclina; };
 static Ajuste gAjustes[64];
 static int gNumAjustes = 0;
-static float gHeli = 1.0f;          // linha "heli N" no fpsajustes.txt (0 desliga)
-static float gPeito[3];
-static bool gTemPeito = false;
+static float gInclinar = 1.0f;      // linha "inclinar N" (0 desliga, 1 total)
+static float gBaixo = 0.5f;         // linha "baixo N": a pe, olhando mais que isso
+                                    // para baixo a cabeca nao e escondida
 
 // a pe: quanto a camera fica a frente do corpo (metros): base, extra se gordo,
 // extra se musculoso. Linha "ape B G M" no fpsajustes.txt
@@ -55,8 +55,8 @@ static const char* PADRAO =
     "# Salve o arquivo e volte ao jogo: vale em ate 2 segundos.\n"
     "# A pe: base, extra se gordo, extra se musculoso (metros)\n"
     "ape 0 0 0\n"
-    "# heli N: quanto a camera do helicoptero acompanha o corpo (0 desliga)\n"
-    "heli 1.0\n"
+    "# inclinar N: helicoptero inclina a imagem junto (0 desliga, 1 total)\n"
+    "inclinar 1.0\n"
     "# BMX\n"
     "481  0.00  -0.05  8\n"
     "# Bike\n"
@@ -82,15 +82,20 @@ static void LerAjustes(const char* caminho)
     }
     char linha[200];
     int n = 0;
-    gApe[0] = gApe[1] = gApe[2] = 0; gHeli = 1.0f;
+    gApe[0] = gApe[1] = gApe[2] = 0; gInclinar = 1.0f; gBaixo = 0.5f;
     while (n < 64 && fgets(linha, sizeof(linha), f))
     {
         for (char* p = linha; *p; p++)
             if (*p == ',') *p = '.';      // aceita 0,10 e 0.10
         float h;
-        if (sscanf(linha, " heli %f", &h) == 1)
+        if (sscanf(linha, " inclinar %f", &h) == 1)
         {
-            gHeli = h < 0 ? 0 : Limite(h, 3.0f);
+            gInclinar = h > 0 ? (h < 1 ? h : 1) : 0;
+            continue;
+        }
+        if (sscanf(linha, " baixo %f", &h) == 1)
+        {
+            gBaixo = Limite(h, 2.0f);
             continue;
         }
         float v[3] = { gApe[0], gApe[1], gApe[2] };
@@ -210,7 +215,6 @@ static void AfastarCorpo(void* ped, void* hier, Matrix* array, int nodes, const 
 }
 
 static bool IsHeliModel(int m);
-static void ParaLocal(const char* m, const float* osso, float* local);
 
 static void HookOf_Render(void* ped)
 {
@@ -239,19 +243,8 @@ static void HookOf_Render(void* ped)
         // limite e menor, para nao afetar a camera de terceira pessoa
         const float limite = veh ? 1.2f : 0.6f;
         hide = dist2 < limite * limite;
-    }
-
-    // anota onde esta o peito do CJ para a camera do helicoptero
-    gTemPeito = false;
-    if (IsHeliModel(model) && array && nodes < 100)
-    {
-        int peito = GetIndex(hier, 4);
-        char* corpo = *(char**)((char*)ped + 0x14);
-        if (corpo && peito >= 0 && peito < nodes)
-        {
-            ParaLocal(corpo, array[peito].pos, gPeito);
-            gTemPeito = fabsf(gPeito[0]) < 3 && fabsf(gPeito[1]) < 3 && fabsf(gPeito[2]) < 3;
-        }
+        // a pe, olhando bem para baixo: deixa a cabeca, que fecha a gola
+        if (!veh && -((const float*)(camMatrix + 0x10))[2] > gBaixo) hide = false;
     }
 
     if ((model != gLastModel || hide != gLastHide) && gLogs < 200)
@@ -348,61 +341,66 @@ static bool IsHeliModel(int m)
 }
 
 // m = matriz do CJ (direita, frente, cima, posicao); osso = posicao no mundo
-static void ParaLocal(const char* m, const float* osso, float* local)
+// ---- helicopteros: a imagem inclina e vira junto com a aeronave ----
+// Depois que o jogo calcula a camera presa, troca o "lado de cima" dela pelo do
+// helicoptero. So escreve se os valores lidos tiverem cara de camera.
+#define CAM_FRENTE 0x190
+#define CAM_CIMA   0x1B4
+typedef void (*CamProc_t)(void*);
+static CamProc_t CamProc_orig;
+static time_t gCamPresa = 0;        // ultima vez que o script prendeu a camera
+
+static float Pto(const float* a, const float* b) { return a[0]*b[0] + a[1]*b[1] + a[2]*b[2]; }
+static bool Unitario(const float* v) { float n = Pto(v, v); return n > 0.98f && n < 1.02f; }
+static bool CaraDeCamera(const float* frente, const float* cima)
 {
-    const float* p = (const float*)(m + 0x30);
-    float d[3] = { osso[0] - p[0], osso[1] - p[1], osso[2] - p[2] };
-    for (int k = 0; k < 3; k++)
-    {
-        const float* eixo = (const float*)(m + 0x10 * k);
-        local[k] = d[0] * eixo[0] + d[1] * eixo[1] + d[2] * eixo[2];
-    }
+    return Unitario(frente) && Unitario(cima) && fabsf(Pto(frente, cima)) < 0.05f;
 }
 
-static void SeguirHeli(void* veh, int modelo, Vec3* pos, Vec3* olhar)
+// mistura o cima da camera com o do veiculo e deixa em angulo reto com a frente
+static bool Inclinar(const float* frente, float* cima, const float* veiculo, float forca)
 {
-    static void* heli = NULL;
-    static float ref[3], ultimo[3], suave[3];
-    static int parado = 0, logs = 0;
-    static bool temRef = false;
-    static time_t visto = 0;
-    time_t agora = time(NULL);
-    if (veh != heli || agora - visto > 2)        // entrou de novo: recomeca
-    {
-        heli = veh; temRef = false; parado = 0;
-        for (int k = 0; k < 3; k++) suave[k] = 0;
-    }
-    visto = agora;
-    if (gHeli <= 0 || !gTemPeito) return;
+    float c[3];
+    for (int k = 0; k < 3; k++) c[k] = cima[k] + (veiculo[k] - cima[k]) * forca;
+    float d = Pto(c, frente);
+    for (int k = 0; k < 3; k++) c[k] -= frente[k] * d;
+    float n = sqrtf(Pto(c, c));
+    if (!(n > 0.1f)) return false;
+    for (int k = 0; k < 3; k++) cima[k] = c[k] / n;
+    return true;
+}
 
-    if (!temRef)
+static void HookOf_CamProc(void* cam)
+{
+    CamProc_orig(cam);
+    if (gInclinar <= 0 || time(NULL) - gCamPresa > 1) return;
+    void* veh = FindPlayerPed(-1) ? FindPlayerVehicle(-1, false) : NULL;
+    if (!veh || !IsHeliModel(*(uint16_t*)((char*)veh + 0x26))) return;
+    char* m = *(char**)((char*)veh + 0x14);
+    if (!m) return;
+    const float* acima = (const float*)(m + 0x20);
+    float* frente = (float*)((char*)cam + CAM_FRENTE);
+    float* cima = (float*)((char*)cam + CAM_CIMA);
+    static bool anotado = false;
+    bool ok = CaraDeCamera(frente, cima) && Unitario(acima);
+    if (!anotado)
     {
-        // espera o CJ ficar quieto no banco para saber a posicao normal
-        float mexeu = fabsf(gPeito[0] - ultimo[0]) + fabsf(gPeito[1] - ultimo[1])
-                    + fabsf(gPeito[2] - ultimo[2]);
-        parado = mexeu < 0.01f ? parado + 1 : 0;
-        memcpy(ultimo, gPeito, sizeof(ultimo));
-        if (parado < 30) return;
-        memcpy(ref, gPeito, sizeof(ref));
-        temRef = true;
-        if (logs < 20)
+        anotado = true;
+        char b[220];
+        snprintf(b, sizeof(b), "inclinar: %s frente=%.2f %.2f %.2f cima=%.2f %.2f %.2f",
+                 ok ? "OK" : "valores nao conferem",
+                 frente[0], frente[1], frente[2], cima[0], cima[1], cima[2]);
+        Note(b);
+        // se nao conferir, anota onde ha vetores de tamanho 1 para corrigir depois
+        for (int o = 0x100; !ok && o <= 0x220; o += 4)
         {
-            logs++;
-            char b[160];
-            snprintf(b, sizeof(b), "heli modelo=%d posicao normal=%.2f %.2f %.2f",
-                     modelo, ref[0], ref[1], ref[2]);
+            const float* v = (const float*)((char*)cam + o);
+            if (!Unitario(v)) continue;
+            snprintf(b, sizeof(b), "inclinar:  em 0x%x: %.2f %.2f %.2f", o, v[0], v[1], v[2]);
             Note(b);
         }
     }
-    for (int k = 0; k < 3; k++)
-    {
-        float d = Limite((gPeito[k] - ref[k]) * gHeli, 0.4f);
-        suave[k] += (d - suave[k]) * 0.30f;
-    }
-    // desloca a camera e o ponto para onde olha: a direcao continua a mesma
-    pos->x += suave[0];   olhar->x += suave[0];
-    pos->y += suave[1];   olhar->y += suave[1];
-    pos->z += suave[2];   olhar->z += suave[2];
+    if (ok) Inclinar(frente, cima, acima, gInclinar);
 }
 
 typedef void (*Attach_t)(void*, void*, void*, Vec3*, Vec3*, float, short, int);
@@ -427,7 +425,7 @@ static void HookOf_Attach(void* cam, void* alvo, void* preso, Vec3* pos, Vec3* o
 
     Vec3 p = *pos, o = *olhar;       // copias: nao mexe nos valores do jogo
     bool mudou = Ajustar(modelo, &p, &o);
-    if (IsHeliModel(modelo)) SeguirHeli(veh, modelo, &p, &o);
+    gCamPresa = time(NULL);
 
     if (modelo != gUltimoCam && gLogsCam < 100)
     {
@@ -446,7 +444,7 @@ extern "C" void OnModLoad()
     logger->SetTag("FPS Teste");
     uintptr_t lib = aml->GetLib("libGTASA.so");
     void* h = aml->GetLibHandle("libGTASA.so");
-    if (!lib || !h) { Note("v32: libGTASA nao encontrada"); return; }
+    if (!lib || !h) { Note("v33: libGTASA nao encontrada"); return; }
 
     FindPlayerPed     = (FindPlayerPed_t)aml->GetSym(h, "_Z13FindPlayerPedi");
     FindPlayerVehicle = (FindPlayerVehicle_t)aml->GetSym(h, "_Z17FindPlayerVehicleib");
@@ -459,18 +457,28 @@ extern "C" void OnModLoad()
     if (!FindPlayerPed || !FindPlayerVehicle || !GetHier || !GetIndex || !Camera
         || *slot != lib + 0x4a68f5)
     {
-        Note("v32: NAO ativado (funcao ausente ou tabela diferente)");
-        aml->ShowToast(true, "FPS Teste v32: NAO ativado");
+        Note("v33: NAO ativado (funcao ausente ou tabela diferente)");
+        aml->ShowToast(true, "FPS Teste v33: NAO ativado");
         return;
     }
     Render_orig = (Render_t)*slot;
     aml->Unprot((uintptr_t)slot, sizeof(uintptr_t));
     *slot = (uintptr_t)&HookOf_Render;
-    Note("v32 carregado: gancho OK");
+    Note("v33 carregado: gancho OK");
 
     GetStat = (GetStat_t)aml->GetSym(h, "_ZN6CStats12GetStatValueEt");
     if (!GetStat) GetStat = (GetStat_t)aml->GetSym(h, "_ZN6CStats12GetStatValueE6eStats");
-    Note(GetStat ? "v32: gordura e musculo OK" : "v32: gordura e musculo indisponiveis");
+    Note(GetStat ? "v33: gordura e musculo OK" : "v33: gordura e musculo indisponiveis");
+
+    uintptr_t* slotProc = (uintptr_t*)(lib + 0x675614);
+    if (*slotProc == lib + 0x3cd4d5)
+    {
+        CamProc_orig = (CamProc_t)*slotProc;
+        aml->Unprot((uintptr_t)slotProc, sizeof(uintptr_t));
+        *slotProc = (uintptr_t)&HookOf_CamProc;
+        Note("v33: inclinacao do helicoptero OK");
+    }
+    else Note("v33: inclinacao NAO ativada (entrada diferente)");
 
     // entrada por onde o jogo prende a camera (conferida no log da v23)
     uintptr_t* slotCam = (uintptr_t*)(lib + 0x66ead8);
@@ -482,8 +490,8 @@ extern "C" void OnModLoad()
         char path[512];
         snprintf(path, sizeof(path), "%s/fpsajustes.txt", aml->GetAndroidDataPath());
         LerAjustes(path);
-        Note("v32: ajuste de camera OK");
+        Note("v33: ajuste de camera OK");
     }
-    else Note("v32: ajuste de camera NAO ativado (entrada diferente)");
-    aml->ShowToast(true, "FPS Teste v32: ativado");
+    else Note("v33: ajuste de camera NAO ativado (entrada diferente)");
+    aml->ShowToast(true, "FPS Teste v33: ativado");
 }
